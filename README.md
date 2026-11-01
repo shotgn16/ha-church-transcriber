@@ -1,5 +1,7 @@
 # Home Assistant add-on: Church Service Transcriber
 
+[![Open your Home Assistant instance and show the add add-on repository dialog with this repository pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fshotgn16%2Fha-church-transcriber)
+
 A self-hosted web app, installed as a Home Assistant add-on, that turns YouTube church services into organised, editable and translatable notes.
 
 ```
@@ -18,7 +20,11 @@ YouTube link / watched channel
 **Stack:** ASP.NET Core (.NET 10 LTS) minimal API + vanilla JS front end (no build step), yt-dlp + Deno, faster-whisper, Ollama native API. Data is stored as JSON files in the add-on's `/data` folder (included in Home Assistant backups).
 
 ## Install
-See [`church_transcriber/DOCS.md`](church_transcriber/DOCS.md). In short: copy `church_transcriber/` into Home Assistant's `/addons` folder, refresh the Add-on Store, install, set `ollama_url`, start.
+1. Click the **Add repository to my Home Assistant** button above (or in Home Assistant go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add `https://github.com/shotgn16/ha-church-transcriber`).
+2. Find **Church Service Transcriber** in the Add-on Store and click **Install**.
+3. On the **Configuration** tab set `ollama_url` to your Ollama server, then **Start**.
+
+Full details are in [`church_transcriber/DOCS.md`](church_transcriber/DOCS.md).
 
 ## Project layout
 ```
