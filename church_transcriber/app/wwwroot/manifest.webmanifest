@@ -1,0 +1,12 @@
+{
+  "name": "Church Service Transcriber",
+  "short_name": "Transcriber",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f3ea",
+  "theme_color": "#1f2a44",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

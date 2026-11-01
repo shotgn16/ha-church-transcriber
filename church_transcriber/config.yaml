@@ -1,0 +1,47 @@
+name: Church Service Transcriber
+version: "1.0.0"
+slug: church_transcriber
+description: Download church services from YouTube, transcribe them, split them into sections, translate and edit the notes.
+url: https://github.com/shotgn16/ha-church-transcriber
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:church
+panel_title: Transcriber
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: Direct web access (optional - leave blank and use the Home Assistant sidebar instead)
+map:
+  - type: share
+    read_only: false
+options:
+  whisper_model: large-v3-turbo
+  whisper_compute: int8
+  whisper_threads: 0
+  ollama_url: http://192.168.1.100:11434
+  ollama_model: ""
+  ollama_context: 16384
+  use_ai_for_sections: true
+  access_password: ""
+  download_video: false
+  media_folder: /share/church_transcriber
+  cookies_file: /share/church_transcriber/cookies.txt
+  update_ytdlp_on_start: true
+schema:
+  whisper_model: list(tiny|base|small|medium|large-v3|large-v3-turbo|distil-large-v3)
+  whisper_compute: list(int8|int8_float32|float32)
+  whisper_threads: int(0,64)
+  ollama_url: url
+  ollama_model: str?
+  ollama_context: int(4096,131072)
+  use_ai_for_sections: bool
+  access_password: password?
+  download_video: bool
+  media_folder: str
+  cookies_file: str?
+  update_ytdlp_on_start: bool

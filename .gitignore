@@ -1,0 +1,5 @@
+bin/
+obj/
+church_transcriber/app/data/
+*.user
+.vs/

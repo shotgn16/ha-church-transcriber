@@ -1,0 +1,38 @@
+configuration:
+  whisper_model:
+    name: Whisper model (speech-to-text)
+    description: "Runs locally inside the add-on. large-v3-turbo is the best balance of accuracy and speed on x86. Use medium or small if your VM has fewer than 4 vCPUs."
+  whisper_compute:
+    name: Whisper compute type
+    description: int8 is fastest on CPUs and uses the least memory.
+  whisper_threads:
+    name: CPU threads for Whisper
+    description: 0 = automatic (all available vCPUs).
+  ollama_url:
+    name: Ollama server address
+    description: Your local Ollama server, e.g. http://192.168.1.50:11434
+  ollama_model:
+    name: Ollama model
+    description: "Leave blank to pick automatically (prefers a Qwen instruct model), or choose one on the add-on's Settings page. Example: qwen2.5:7b-instruct"
+  ollama_context:
+    name: Ollama context size (tokens)
+    description: 16384 suits 7B-14B models. Lower it if Ollama runs out of memory.
+  use_ai_for_sections:
+    name: Use the AI model to split services into sections
+    description: When off, a built-in church-service detector is used instead.
+  access_password:
+    name: Direct-access password
+    description: Only applies if you open port 8099 directly. Access through the Home Assistant sidebar or app never asks for it.
+  download_video:
+    name: Also save the full video
+    description: Saves an MP4 of each service to the media folder. Audio is always kept for playback in the editor.
+  media_folder:
+    name: Media folder
+  cookies_file:
+    name: YouTube cookies file
+    description: Optional Netscape cookies.txt, only needed if YouTube blocks downloads.
+  update_ytdlp_on_start:
+    name: Update the YouTube downloader on start
+    description: Recommended - YouTube changes often.
+network:
+  8099/tcp: Direct web access
