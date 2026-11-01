@@ -8,6 +8,12 @@ public sealed record ProcResult(int ExitCode, string StdOut, string StdErrTail)
     public bool Ok => ExitCode == 0;
 }
 
+/// <summary>A failure of an external tool, with a friendly message and the raw output for troubleshooting.</summary>
+public sealed class ToolException(string message, string details) : Exception(message)
+{
+    public string Details { get; } = details;
+}
+
 /// <summary>Runs external tools (yt-dlp, ffmpeg, python) with line streaming and cancellation.</summary>
 public static class Proc
 {

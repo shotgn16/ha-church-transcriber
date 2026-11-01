@@ -152,7 +152,27 @@ Calls made through the Home Assistant sidebar don't need the key; everything els
 - Translations follow your sections. If you split or merge sections after translating, translate again to match.
 
 ## Troubleshooting
-- **"Not reachable" for Ollama on the Settings page** - check `ollama_url`, that `OLLAMA_HOST=0.0.0.0` is set, and that the firewall allows port 11434.
-- **YouTube download errors** - restart the add-on (it updates the downloader on start). If it persists, export YouTube cookies to `/share/church_transcriber/cookies.txt`.
-- **Transcription slow** - choose a smaller `whisper_model`, give the VM more vCPUs, and confirm AVX2 is available.
-- Logs are on the add-on's **Log** tab.
+
+If a service fails, open it: the red message explains the cause, **Show details** has the full error (with a **Copy details** button), and **Try again** resumes from where it stopped - there's no need to delete the service.
+
+**"YouTube asked to confirm this isn't a bot"** - YouTube sometimes blocks automated downloads. Give the add-on your YouTube cookies:
+1. On a computer, install a browser extension that exports cookies in *Netscape / cookies.txt* format (for example "Get cookies.txt LOCALLY" for Chrome/Edge, or "cookies.txt" for Firefox).
+2. Open youtube.com (signing in is optional but more reliable), and export cookies for youtube.com to a file named `cookies.txt`.
+3. Copy it into the `share` folder on Home Assistant as `church_transcriber/cookies.txt` (using the Samba share or File editor add-on), so the path is `/share/church_transcriber/cookies.txt`.
+4. Press **Try again** - no restart needed.
+
+**"YouTube refused the download (HTTP 403)" or "couldn't solve YouTube's player challenge"** - YouTube changed something. Restart the add-on (it updates the downloader on start) and press **Try again**.
+
+**"Whisper ran out of memory"** - give the Home Assistant VM more RAM (6 GB or more for `large-v3-turbo`), or set `whisper_model` to `medium` or `small`, restart the add-on and press **Try again** (the download is reused).
+
+**"This CPU doesn't expose the instructions Whisper needs"** - in ESXi, edit the VM's CPU settings so AVX/AVX2 are passed through (check the EVC / CPU compatibility mode), then restart the VM.
+
+**"Couldn't download the Whisper model"** - the first transcription downloads the model from huggingface.co; check the machine's internet access and press **Try again**.
+
+**Stuck on "Stream ended - waiting for YouTube to finish processing"** - after a live stream YouTube can take a while (sometimes hours for long streams) before the recording can be downloaded. The add-on checks every 15 minutes and continues automatically.
+
+**Ollama shows "Not reachable"** on the Settings page - check `ollama_url`, that `OLLAMA_HOST=0.0.0.0` is set on the Ollama machine, and that the firewall allows port 11434.
+
+**Transcription slow** - choose a smaller `whisper_model`, give the VM more vCPUs, and confirm AVX2 is available.
+
+Logs are on the add-on's **Log** tab.

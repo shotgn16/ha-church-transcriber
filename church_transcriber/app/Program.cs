@@ -101,7 +101,7 @@ api.MapPost("/transcripts", (NewJobRequest req, Store s, JobQueue q) =>
     var created = new List<string>();
     foreach (var raw in urls)
     {
-        var url = raw.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? raw : "https://" + raw;
+        var url = YouTube.CanonicalUrl(raw);
         var t = new Transcript
         {
             Url = url, VideoId = YouTube.ExtractVideoId(url),
@@ -157,9 +157,16 @@ api.MapPost("/transcripts/{id}/cancel", (string id, Store s, JobQueue q) =>
     return Results.Ok();
 });
 
-api.MapPost("/transcripts/{id}/retry", (string id, Store s, JobQueue q) =>
+api.MapPost("/transcripts/{id}/retry", (string id, Store s, JobQueue q, AppPaths p) =>
 {
-    if (!s.Update(id, t => { t.Status = JobStatus.Queued; t.Error = null; t.Progress = 0; t.StatusMessage = "Waiting in queue"; })) return Results.NotFound();
+    var full = s.Snapshot(id)?.Status == JobStatus.Ready; // "transcribe again" on a finished service = start from scratch
+    if (!s.Update(id, t =>
+    {
+        t.Status = JobStatus.Queued; t.Error = null; t.ErrorDetails = null; t.Progress = 0;
+        t.StatusMessage = full ? "Waiting in queue" : "Resuming - waiting in queue";
+        if (full) { t.Segments = new(); t.Sections = new(); t.HasAudio = false; }
+    })) return Results.NotFound();
+    if (full) try { File.Delete(p.AudioFile(id)); } catch { }
     q.Enqueue(id);
     return Results.Ok();
 });
@@ -379,7 +386,7 @@ v1.MapPost("/transcripts", (ApiSubmit body, Store s, JobQueue q) =>
     var ids = new List<string>();
     foreach (var raw in urls)
     {
-        var url = raw.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? raw : "https://" + raw;
+        var url = YouTube.CanonicalUrl(raw);
         var vid = YouTube.ExtractVideoId(url);
         var existing = vid == null ? null : s.SnapshotAll(t => t.VideoId == vid).FirstOrDefault();
         if (existing != null) { ids.Add(existing.Id); continue; }

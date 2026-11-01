@@ -211,9 +211,17 @@ async function viewEditor(id) {
       <p class="${T.status === 'failed' ? '' : 'muted'}" style="${T.status === 'failed' ? 'color:var(--bad)' : ''}">${esc(T.status === 'failed' ? T.error : T.statusMessage || '')}</p>
       ${ACTIVE.includes(T.status) ? `<div class="bar"><i style="width:${Math.round((T.progress || 0) * 100)}%"></i></div>` : ''}
       ${waiting && T.nextCheck ? `<p class="muted">Next check ${esc(fmtDate(T.nextCheck))}</p>` : ''}
-      ${['failed', 'cancelled'].includes(T.status) ? `<button class="btn primary" id="retryBtn">Try again</button>` : ''}
+      ${T.status === 'failed' && T.errorDetails ? `<details style="text-align:left;max-width:640px;margin:10px auto"><summary style="cursor:pointer">Show details</summary>
+        <pre class="codebox" id="errDetails">${esc(T.errorDetails)}</pre><button class="btn small" id="copyErr">Copy details</button></details>` : ''}
+      ${['failed', 'cancelled'].includes(T.status) ? `<button class="btn primary" id="retryBtn">Try again</button>
+        <p class="muted" style="font-size:13px">Try again picks up where it stopped - no need to delete the service.</p>` : ''}
       <p class="muted" style="font-size:13px;margin-top:16px">You can close this page - processing continues on your Home Assistant.</p></div>`;
     $('#retryBtn') && ($('#retryBtn').onclick = () => moreAction('retry'));
+    $('#copyErr') && ($('#copyErr').onclick = async () => {
+      const text = `${T.error}\n\n${T.errorDetails}`;
+      try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+      toast('Copied - paste it to whoever is helping you');
+    });
   }
 
   function tabsHtml() {

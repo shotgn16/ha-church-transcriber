@@ -31,8 +31,7 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
         }, captureStdout: false);
 
         if (!r.Ok || !File.Exists(outJson))
-            throw new InvalidOperationException("Transcription failed: " +
-                (r.StdErrTail.Split('\n').LastOrDefault(l => l.Trim().Length > 0) ?? $"exit code {r.ExitCode}"));
+            throw new ToolException(ExplainFailure(r), $"exit code {r.ExitCode}\n{r.StdErrTail}");
 
         using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(outJson, ct));
         var lang = doc.RootElement.TryGetProperty("language", out var l) ? l.GetString() : null;
@@ -44,6 +43,21 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
         }).ToList();
         File.Delete(outJson);
         return new TranscriptionResult(lang, CleanHallucinations(segs));
+    }
+
+    private string ExplainFailure(ProcResult r)
+    {
+        var t = r.StdErrTail.ToLowerInvariant();
+        var last = r.StdErrTail.Split('\n').LastOrDefault(l => l.Trim().Length > 0) ?? "";
+        if (r.ExitCode is 137 or -9 || t.Contains("killed") || t.Contains("memoryerror") || t.Contains("out of memory") || t.Contains("bad_alloc"))
+            return $"Whisper ran out of memory. Give the Home Assistant VM more RAM (6 GB or more for '{opts.WhisperModel}'), or set whisper_model to 'medium' or 'small' on the add-on's Configuration tab.";
+        if (r.ExitCode is 132 or -4 || t.Contains("illegal instruction"))
+            return "This CPU doesn't expose the instructions Whisper needs (AVX/AVX2). In ESXi, set the VM's CPU compatibility / EVC mode to expose AVX2 to the guest, then restart the VM.";
+        if (t.Contains("huggingface") || t.Contains("hf_hub") || t.Contains("connection") || t.Contains("localentrynotfound"))
+            return "Couldn't download the Whisper model (the first run downloads it from huggingface.co). Check the Home Assistant machine's internet access, then press Try again.";
+        if (t.Contains("no space left")) return "The Home Assistant disk is full - free some space and try again.";
+        if (r.ExitCode == -1) return "Couldn't start Whisper: " + last;
+        return "Transcription failed: " + last;
     }
 
     /// <summary>Removes classic Whisper artefacts that appear over music or silence.</summary>

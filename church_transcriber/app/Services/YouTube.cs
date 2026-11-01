@@ -27,6 +27,8 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
     {
         yield return "--no-warnings";
         yield return "--ignore-config";
+        foreach (var a in new[] { "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3" })
+            yield return a;
         if (!string.IsNullOrWhiteSpace(opts.CookiesFile) && File.Exists(opts.CookiesFile))
         {
             yield return "--cookies";
@@ -37,9 +39,16 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
     public async Task<VideoInfo> ProbeAsync(string url, CancellationToken ct)
     {
         var args = CommonArgs().Concat(new[] { "-J", "--no-playlist", "--ignore-no-formats-error", url });
-        var r = await Proc.RunAsync(paths.YtDlp, args, ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+        ProcResult r;
+        try { r = await Proc.RunAsync(paths.YtDlp, args, timeout.Token); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ToolException("YouTube didn't respond within 5 minutes. Check the Home Assistant machine's internet connection and try again.", "yt-dlp -J timed out");
+        }
         if (!r.Ok || string.IsNullOrWhiteSpace(r.StdOut))
-            throw new InvalidOperationException("Could not read the video from YouTube: " + LastError(r.StdErrTail));
+            throw new ToolException("Couldn't read the video from YouTube. " + Explain(r.StdErrTail), r.StdErrTail);
 
         using var doc = JsonDocument.Parse(r.StdOut);
         var root = doc.RootElement;
@@ -89,17 +98,17 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
             if (line.StartsWith("DL") && m.Success && double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
                 progress(pct / 100.0);
         }, captureStdout: false);
-        if (!r.Ok) throw new InvalidOperationException("Download failed: " + LastError(r.StdErrTail));
+        if (!r.Ok) throw new ToolException("The download failed. " + Explain(r.StdErrTail), r.StdErrTail);
 
         var src = Directory.EnumerateFiles(dir, "source.*").FirstOrDefault(f => !f.EndsWith(".part"))
-                  ?? throw new InvalidOperationException("Download finished but no audio file was found.");
+                  ?? throw new ToolException("The download finished but no audio file was found.", string.Join('\n', Directory.GetFiles(dir)));
         var outFile = paths.AudioFile(id);
         var conv = await Proc.RunAsync(paths.Ffmpeg, new[]
         {
             "-y", "-hide_banner", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", "16000",
             "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart", outFile
         }, ct, captureStdout: false);
-        if (!conv.Ok) throw new InvalidOperationException("Audio conversion failed: " + LastError(conv.StdErrTail));
+        if (!conv.Ok) throw new ToolException("Converting the audio failed.", conv.StdErrTail);
         File.Delete(src);
     }
 
@@ -158,6 +167,38 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
         var path = u.AbsolutePath.TrimEnd('/');
         var isChannelRoot = ChannelRootRx().IsMatch(path);
         return isChannelRoot ? $"{u.Scheme}://{u.Host}{path}/streams" : url;
+    }
+
+    /// <summary>Turns mobile/share/tracking links (m.youtube.com, youtu.be, /live/, ?pp=, ?si=) into a clean watch URL.</summary>
+    public static string CanonicalUrl(string url)
+    {
+        url = url.Trim();
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = "https://" + url;
+        var id = ExtractVideoId(url);
+        return id == null ? url : $"https://www.youtube.com/watch?v={id}";
+    }
+
+    /// <summary>Plain-English explanation of common yt-dlp failures.</summary>
+    public static string Explain(string tail)
+    {
+        var t = tail.ToLowerInvariant();
+        var last = LastError(tail);
+        if (t.Contains("confirm you") && t.Contains("bot") || t.Contains("sign in to confirm"))
+            return "YouTube asked to confirm this isn't a bot. Export YouTube cookies to /share/church_transcriber/cookies.txt (see Documentation → Troubleshooting), then try again.";
+        if (t.Contains("private video")) return "This video is private.";
+        if (t.Contains("members-only") || t.Contains("join this channel")) return "This video is for channel members only.";
+        if (t.Contains("age") && t.Contains("restrict") || t.Contains("inappropriate for some users")) return "This video is age-restricted - add a cookies file from a signed-in account.";
+        if (t.Contains("video unavailable") || t.Contains("has been removed")) return "YouTube says this video is unavailable.";
+        if (t.Contains("javascript runtime") || t.Contains("n challenge") || t.Contains("signature") && t.Contains("fail"))
+            return "The downloader couldn't solve YouTube's player challenge. Restart the add-on (it updates the downloader on start) and try again. Detail: " + last;
+        if (t.Contains("http error 403") || t.Contains("403: forbidden"))
+            return "YouTube refused the download (HTTP 403). Restart the add-on to update the downloader, then press Try again. Detail: " + last;
+        if (t.Contains("http error 429") || t.Contains("too many requests"))
+            return "YouTube is rate-limiting this connection. Wait an hour, or add a cookies file, then try again.";
+        if (t.Contains("name resolution") || t.Contains("timed out") || t.Contains("unable to connect") || t.Contains("network is unreachable"))
+            return "Couldn't connect to YouTube - check the Home Assistant machine's internet/DNS. Detail: " + last;
+        if (t.Contains("requested format is not available")) return "YouTube offered no downloadable audio for this video yet - if it was just streamed, try again later.";
+        return "Detail: " + last;
     }
 
     public static string? ExtractVideoId(string url)

@@ -73,8 +73,13 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
             }
             catch (Exception ex)
             {
-                log.LogError(ex, "Job {Id} failed", id);
-                store.Update(id, t => { t.Status = JobStatus.Failed; t.Error = ex.Message; t.StatusMessage = "Failed"; });
+                var details = ex is ToolException te ? te.Details : ex.ToString();
+                log.LogError("Job {Id} failed: {Message}\n{Details}", id, ex.Message, details);
+                store.Update(id, t =>
+                {
+                    t.Status = JobStatus.Failed; t.Error = ex.Message; t.StatusMessage = "Failed";
+                    t.ErrorDetails = details.Length > 6000 ? details[^6000..] : details;
+                });
                 _ = notifier.FailedAsync(id, ex.Message);
             }
             finally { queue.End(id); }
@@ -94,8 +99,16 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         {
             x.VideoId = info.Id; x.Title = string.IsNullOrWhiteSpace(info.Title) ? x.Title : info.Title; x.Channel = info.Channel;
             x.Thumbnail = info.Thumbnail; x.Duration = info.Duration; x.UploadDate = info.UploadDate; x.LiveStatus = info.LiveStatus;
-            x.ScheduledStart = info.ReleaseTime ?? x.ScheduledStart; x.Chapters = info.Chapters; x.Error = null;
+            x.ScheduledStart = info.ReleaseTime ?? x.ScheduledStart; x.Chapters = info.Chapters; x.Error = null; x.ErrorDetails = null;
         });
+
+        // Resuming after a failure: reuse what's already done.
+        if (t.Segments.Count > 0)
+        {
+            await OrganiseAsync(id, ct);
+            QueueAutoTranslations(id, t.DetectedLanguage);
+            return;
+        }
 
         // ---- 2. Scheduled premieres / live streams: wait until the recording is available ----
         if (info.LiveStatus is "is_upcoming" or "is_live" or "post_live")
@@ -117,15 +130,18 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
             return;
         }
 
-        // ---- 3. Download audio ----
+        // ---- 3. Download audio (skipped when a previous attempt already got it) ----
         var lastSave = DateTime.MinValue;
-        await yt.DownloadAudioAsync(t.Url, id, p =>
+        if (!(t.HasAudio && File.Exists(paths.AudioFile(id))))
         {
-            if ((DateTime.UtcNow - lastSave).TotalSeconds < 2) return;
-            lastSave = DateTime.UtcNow;
-            Set(id, JobStatus.Downloading, p, $"Downloading audio… {p:P0}");
-        }, ct);
-        store.Update(id, x => x.HasAudio = true);
+            await yt.DownloadAudioAsync(t.Url, id, p =>
+            {
+                if ((DateTime.UtcNow - lastSave).TotalSeconds < 2) return;
+                lastSave = DateTime.UtcNow;
+                Set(id, JobStatus.Downloading, p, $"Downloading audio… {p:P0}");
+            }, ct);
+            store.Update(id, x => x.HasAudio = true);
+        }
 
         if (opts.DownloadVideo)
         {
@@ -152,8 +168,14 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         await OrganiseAsync(id, ct);
 
         // ---- 6. Automatic translations ----
-        var auto = store.Snapshot(id)!.AutoTranslateTo;
-        foreach (var l in auto.Where(l => l != result.Language)) RequestTranslation(store, queue, id, l);
+        QueueAutoTranslations(id, result.Language);
+    }
+
+    private void QueueAutoTranslations(string id, string? spoken)
+    {
+        var t = store.Snapshot(id)!;
+        foreach (var l in t.AutoTranslateTo.Where(l => l != spoken && !(t.Translations.TryGetValue(l, out var x) && x.Status == "done")))
+            RequestTranslation(store, queue, id, l);
     }
 
     public async Task OrganiseAsync(string id, CancellationToken ct)
