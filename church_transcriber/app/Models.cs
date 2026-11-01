@@ -124,6 +124,13 @@ public sealed class Settings
     public bool ExportTimestamps { get; set; } = true;
     public string ChurchName { get; set; } = "";
     public string? OllamaModel { get; set; }
+
+    // ---- Automation API & notifications ----
+    public string ApiKey { get; set; } = "";
+    public bool HaEvents { get; set; } = true;
+    public string WebhookUrl { get; set; } = "";
+    /// <summary>Query-string selection of what notifications carry (see ContentSelection).</summary>
+    public string NotifySelection { get; set; } = "parts=summary,scriptures,outline";
 }
 
 // ---- Request bodies ----
@@ -131,5 +138,8 @@ public sealed record NewJobRequest(string? Urls, string? Language, List<string>?
 public sealed record TranscriptEdit(string? Title, string? SummaryHtml, List<Section>? Sections);
 public sealed record TranslationEdit(string? Title, string? SummaryHtml, List<SectionText>? Sections);
 public sealed record TranslateRequest(string Lang);
+public sealed record AutomationEdit(bool? HaEvents, string? WebhookUrl, string? NotifySelection);
+public sealed record ApiSubmit(string? Url, List<string>? Urls, string? Language,
+    [property: System.Text.Json.Serialization.JsonPropertyName("translate_to")] List<string>? TranslateTo);
 public sealed record WatchRequest(string? Name, string? Url, string? TitleFilter, string? Language, List<string>? TranslateTo,
     int? IntervalMinutes, bool? UseStreamsTab, bool? IncludeLatestExisting, bool? Enabled);

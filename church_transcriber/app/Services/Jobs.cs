@@ -42,7 +42,7 @@ public sealed class JobQueue
 
 /// <summary>Processes one service at a time: probe → (wait if scheduled/live) → download → transcribe → organise.</summary>
 public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt, Transcriber stt, Sectioner sectioner,
-    AppPaths paths, AddonOptions opts, ILogger<TranscriptionWorker> log) : BackgroundService
+    AppPaths paths, AddonOptions opts, Notifier notifier, ILogger<TranscriptionWorker> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stopping)
     {
@@ -60,7 +60,12 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         {
             queue.Dequeued(id);
             var cts = queue.Begin(id, stopping);
-            try { await ProcessAsync(id, cts.Token); }
+            try
+            {
+                var wasReady = store.Snapshot(id)?.Status == JobStatus.Ready;
+                await ProcessAsync(id, cts.Token);
+                if (!wasReady && store.Snapshot(id)?.Status == JobStatus.Ready) _ = notifier.TranscriptReadyAsync(id);
+            }
             catch (OperationCanceledException) when (stopping.IsCancellationRequested) { break; }
             catch (OperationCanceledException)
             {
@@ -70,6 +75,7 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
             {
                 log.LogError(ex, "Job {Id} failed", id);
                 store.Update(id, t => { t.Status = JobStatus.Failed; t.Error = ex.Message; t.StatusMessage = "Failed"; });
+                _ = notifier.FailedAsync(id, ex.Message);
             }
             finally { queue.End(id); }
         }
@@ -204,7 +210,7 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
 }
 
 /// <summary>Translates finished transcripts section by section with the local model.</summary>
-public sealed class TranslationWorker(JobQueue queue, Store store, Translator translator, ILogger<TranslationWorker> log) : BackgroundService
+public sealed class TranslationWorker(JobQueue queue, Store store, Translator translator, Notifier notifier, ILogger<TranslationWorker> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stopping)
     {
@@ -251,6 +257,7 @@ public sealed class TranslationWorker(JobQueue queue, Store store, Translator tr
         }
         result.Status = "done"; result.Progress = 1; result.UpdatedAt = DateTimeOffset.UtcNow;
         store.Update(id, x => x.Translations[lang] = result);
+        _ = notifier.TranslationReadyAsync(id, lang);
     }
 }
 

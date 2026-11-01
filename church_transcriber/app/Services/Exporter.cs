@@ -4,7 +4,7 @@ using System.Text;
 
 namespace ChurchTranscriber.Services;
 
-public sealed record ExportSection(string Title, string Kind, double Start, double End, string Html);
+public sealed record ExportSection(string Title, string Kind, double Start, double End, string Html, string Id = "");
 public sealed record ExportDoc(string Title, string Meta, string? Url, string? SummaryHtml, List<ScriptureRef> Scriptures,
     List<ExportSection> Sections, string Lang, bool Timestamps);
 
@@ -19,13 +19,13 @@ public static class Exporter
         {
             var map = tr.Sections.ToDictionary(s => s.Id);
             var secs = t.Sections.Select(s => map.TryGetValue(s.Id, out var x)
-                ? new ExportSection(x.Title, s.Kind, s.Start, s.End, x.Html)
-                : new ExportSection(s.Title, s.Kind, s.Start, s.End, s.Html)).ToList();
+                ? new ExportSection(x.Title, s.Kind, s.Start, s.End, x.Html, s.Id)
+                : new ExportSection(s.Title, s.Kind, s.Start, s.End, s.Html, s.Id)).ToList();
             return new ExportDoc(string.IsNullOrWhiteSpace(tr.Title) ? t.Title : tr.Title, meta + $" · {Translator.NameOf(lang)}",
                 t.Url, tr.SummaryHtml, t.Scriptures, secs, lang, timestamps);
         }
         return new ExportDoc(t.Title, meta, t.Url, t.SummaryHtml, t.Scriptures,
-            t.Sections.Select(s => new ExportSection(s.Title, s.Kind, s.Start, s.End, s.Html)).ToList(), t.DetectedLanguage ?? "en", timestamps);
+            t.Sections.Select(s => new ExportSection(s.Title, s.Kind, s.Start, s.End, s.Html, s.Id)).ToList(), t.DetectedLanguage ?? "en", timestamps);
     }
 
     // ---------------- Markdown / text ----------------

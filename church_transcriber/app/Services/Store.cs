@@ -44,6 +44,11 @@ public sealed class Store
                 _settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsFile), Json) ?? new();
         }
         catch (Exception ex) { _log.LogError(ex, "Could not load watches/settings"); }
+        if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+        {
+            _settings.ApiKey = NewApiKey();
+            WriteAtomic(SettingsFile, JsonSerializer.Serialize(_settings, Json));
+        }
         _log.LogInformation("Loaded {T} transcripts and {W} channel watches", _transcripts.Count, _watches.Count);
     }
 
@@ -167,6 +172,8 @@ public sealed class Store
     }
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
+
+    public static string NewApiKey() => "ct_" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 
     public static T Clone<T>(T obj) => JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(obj, Json), Json)!;
 }

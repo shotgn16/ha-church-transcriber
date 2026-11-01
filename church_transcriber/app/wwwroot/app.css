@@ -54,7 +54,7 @@ h1.page { font: 600 28px/1.2 var(--serif); margin: 0 0 4px; }
 label.field { display: block; margin-bottom: 16px; }
 label.field > span { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
 label.field small { display: block; color: var(--ink-3); margin-top: 4px; font-size: 13px; }
-input[type=text], input[type=url], input[type=search], input[type=number], select, textarea {
+input[type=text], input[type=url], input[type=search], input[type=number], input[type=password], select, textarea {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 textarea { resize: vertical; min-height: 90px; }
 input:focus, select:focus, textarea:focus, .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
@@ -213,3 +213,9 @@ section.sec[class*="k-"] { border-left: 4px solid var(--k); }
   .topbar, .toolbar, .side, .player, .tabs, .findbar, .ed-meta .btn, .sec-head .acts, .sec-head .kind, .menu { display: none !important; }
   .ed-layout { display: block; } body { background: #fff; } .doc section.sec { border: none; box-shadow: none; }
 }
+
+/* API page */
+.codebox { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 12px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; margin: 12px 0; }
+code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.grid2 > div { min-width: 0; }

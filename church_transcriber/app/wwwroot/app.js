@@ -66,6 +66,7 @@ async function route() {
     if (page === 'new') return viewNew();
     if (page === 'watches') return viewWatches();
     if (page === 'settings') return viewSettings();
+    if (page === 'api') return viewApi(id);
     if (page === 't' && id) return viewEditor(id);
     return viewLibrary();
   } catch (e) { view.innerHTML = `<div class="empty"><h2>Something went wrong</h2><p>${esc(e.message)}</p></div>`; }
@@ -174,6 +175,7 @@ async function viewEditor(id) {
             <div class="menu-list card">${exportLinks()}</div></div>
           <div class="menu" id="moreMenu"><button class="btn small">More ▾</button>
             <div class="menu-list card">
+              ${T.status === 'ready' ? `<button data-act="api">Use in an automation (API)…</button>` : ''}
               ${T.status === 'ready' ? `<button data-act="resection">Re-organise sections automatically</button>` : ''}
               ${['failed', 'cancelled', 'ready'].includes(T.status) ? `<button data-act="retry">Download &amp; transcribe again</button>` : ''}
               ${[...ACTIVE, 'waiting'].includes(T.status) ? `<button data-act="cancel">Cancel processing</button>` : ''}
@@ -538,6 +540,7 @@ async function viewEditor(id) {
   // ---- Menu actions ----
   async function moreAction(act) {
     $$('.menu').forEach(m => m.classList.remove('open'));
+    if (act === 'api') { location.hash = `#/api/${id}`; return; }
     try {
       if (act === 'delete') {
         if (!confirm('Delete this service, its transcript, translations and audio?')) return;
@@ -694,3 +697,230 @@ async function viewSettings() {
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 route();
+
+// ---------------------------------------------------------------- Automation API
+async function viewApi(presetId) {
+  const [auto, list] = await Promise.all([api('automation'), api('transcripts')]);
+  const ready = list.filter(t => t.status === 'ready');
+  const host = auto.internalBaseUrl;
+  const PARTS = { summary: 'Overview & sermon notes', scriptures: 'Scripture references', outline: 'Outline (section list)', sections: 'Section text' };
+  const st = { id: presetId && ready.some(t => t.id === presetId) ? presetId : 'latest', lang: '', mode: 'whole', parts: new Set(['summary', 'scriptures']),
+    secMode: 'all', kinds: new Set(['sermon']), indexes: new Set(), format: 'json', ts: false, max: '' };
+  let detail = null;
+
+  view.innerHTML = `
+    <h1 class="page">Use transcripts in automations</h1>
+    <p class="sub">Pull transcripts into Home Assistant automations (or Node-RED, scripts…) through the API, or let the add-on push them to Home Assistant when a service is ready.</p>
+    <div class="grid2">
+      <div>
+        <div class="card pad" style="margin-bottom:20px">
+          <h3 style="margin-top:0;font-family:var(--serif)">1. Choose what to send</h3>
+          <label class="field"><span>Service</span><select id="aId"><option value="latest">Latest finished service (always the newest)</option>
+            ${ready.map(t => `<option value="${t.id}">${esc(t.title)}${t.uploadDate ? ' · ' + esc(t.uploadDate) : ''}</option>`).join('')}</select></label>
+          <label class="field"><span>Language</span><select id="aLang"></select></label>
+          <div class="field"><span style="display:block;font-weight:600;margin-bottom:6px;font-size:14px">Content</span>
+            <label class="check"><input type="radio" name="aMode" value="whole" checked><span><b>Whole transcript</b> - overview, scriptures, outline and every section</span></label>
+            <label class="check"><input type="radio" name="aMode" value="parts"><span><b>Choose parts</b></span></label>
+            <div id="aParts" style="margin-left:28px"></div>
+          </div>
+          <div class="row" style="align-items:flex-end">
+            <label class="field grow" style="margin:0"><span>Format</span><select id="aFmt">
+              <option value="json">JSON (best for automations)</option><option value="text">Plain text (notifications, TTS)</option>
+              <option value="markdown">Markdown</option><option value="html">HTML</option></select></label>
+            <label class="field" style="margin:0;width:150px"><span>Max characters</span><input type="number" id="aMax" min="40" placeholder="No limit"></label>
+          </div>
+          <label class="check" style="margin-top:14px"><input type="checkbox" id="aTs"><span>Include timestamps in the text</span></label>
+        </div>
+        <div class="card pad">
+          <h3 style="margin-top:0;font-family:var(--serif)">3. Push to Home Assistant when a service is ready</h3>
+          <label class="check"><input type="checkbox" id="nHa" ${auto.haEvents ? 'checked' : ''}><span>Fire a Home Assistant event<br>
+            <small class="muted"><code>${auto.events[0]}</code> when a transcript is ready, <code>${auto.events[1]}</code> for translations, <code>${auto.events[2]}</code> on errors.</small></span></label>
+          <label class="field"><span>Webhook (optional)</span><input type="url" id="nHook" value="${esc(auto.webhookUrl)}" placeholder="http://node-red:1880/endpoint">
+            <small>Also POST the same JSON to this address - for Node-RED, n8n and similar.</small></label>
+          <p style="font-size:14px;margin:0 0 6px"><b>Notifications include:</b> <span id="nSel"></span></p>
+          <div class="row"><button class="btn small" id="nUse">Use the selection above for notifications</button>
+            <button class="btn small" id="nTest">Send a test now</button><button class="btn small primary" id="nSave">Save</button></div>
+          ${auto.runningInHomeAssistant ? '' : '<p class="muted" style="font-size:13px">Events are only available when running as a Home Assistant add-on.</p>'}
+        </div>
+      </div>
+      <div>
+        <div class="card pad" style="margin-bottom:20px">
+          <h3 style="margin-top:0;font-family:var(--serif)">2. Use it</h3>
+          <label class="field"><span>API address (from Home Assistant)</span>
+            <div class="row" style="flex-wrap:nowrap"><input type="text" id="aUrl" readonly style="font-family:ui-monospace,monospace;font-size:13px;min-width:0"><button class="btn small" data-copy="aUrl">Copy</button></div></label>
+          <label class="field"><span>API key</span>
+            <div class="row"><input type="password" id="aKey" readonly value="${esc(auto.apiKey)}" style="font-family:ui-monospace,monospace;font-size:13px;flex:1 1 180px;min-width:0;width:auto">
+              <button class="btn small" id="aShow">Show</button><button class="btn small" data-copy="aKey">Copy</button><button class="btn small danger" id="aRegen">New key</button></div>
+            <small>Send it as the header <code>Authorization: Bearer &lt;key&gt;</code>. Keep it in <code>secrets.yaml</code>.</small></label>
+          <div class="row"><button class="btn primary" id="aTry">Preview result</button><span class="muted" id="aInfo" style="font-size:13px"></span></div>
+          <pre id="aOut" class="codebox" style="display:none"></pre>
+        </div>
+        <div class="card pad">
+          <h3 style="margin-top:0;font-family:var(--serif)">Home Assistant examples</h3>
+          <div class="tabs" id="yTabs"><button class="tab on" data-y="event">Event automation</button><button class="tab" data-y="rest">Pull on demand</button><button class="tab" data-y="sensor">Sensor</button></div>
+          <p class="muted" id="yHelp" style="font-size:13px"></p>
+          <pre id="yOut" class="codebox"></pre>
+          <button class="btn small" data-copy="yOut">Copy YAML</button>
+        </div>
+      </div>
+    </div>`;
+
+  const query = () => {
+    const q = [];
+    if (st.mode === 'parts') {
+      const parts = Object.keys(PARTS).filter(p => st.parts.has(p));
+      if (parts.length) q.push('parts=' + parts.join(','));
+      if (st.parts.has('sections') && st.secMode === 'kinds' && st.kinds.size) q.push('kinds=' + [...st.kinds].join(','));
+      if (st.parts.has('sections') && st.secMode === 'pick' && st.indexes.size) q.push('sections=' + [...st.indexes].sort((a, b) => a - b).join(','));
+    }
+    if (st.format !== 'json') q.push('format=' + st.format);
+    if (st.lang) q.push('lang=' + st.lang);
+    if (st.ts) q.push('timestamps=1');
+    if (+st.max > 0) q.push('max_chars=' + (+st.max));
+    return q.join('&');
+  };
+  const path = () => `api/v1/transcripts/${st.id}` + (query() ? '?' + query() : '');
+  const describe = qs => {
+    const p = new URLSearchParams(qs); const parts = p.get('parts');
+    const what = parts ? parts.split(',').map(x => PARTS[x] || x).join(', ') : 'the whole transcript';
+    const extra = [p.get('kinds') && `only ${p.get('kinds').split(',').map(k => KINDS[k] || k).join(', ')} sections`, p.get('sections') && `sections ${p.get('sections')}`].filter(Boolean);
+    return what + (extra.length ? ` (${extra.join('; ')})` : '');
+  };
+
+  async function loadDetail() {
+    detail = st.id === 'latest' ? (ready[0] ? await api('transcripts/' + ready[0].id) : null) : await api('transcripts/' + st.id);
+    const langs = detail ? Object.values(detail.translations || {}).filter(x => x.status === 'done').map(x => x.lang) : [];
+    const all = st.id === 'latest' ? Object.keys(STATUS.languages) : langs;
+    $('#aLang').innerHTML = `<option value="">Original${detail?.detectedLanguage ? ' (' + esc(langName(detail.detectedLanguage)) + ')' : ''}</option>` +
+      all.filter(c => c !== detail?.detectedLanguage).map(c => `<option value="${c}" ${c === st.lang ? 'selected' : ''}>${esc(langName(c))}${langs.includes(c) ? '' : ' (if translated)'}</option>`).join('');
+    if (!all.includes(st.lang)) st.lang = '';
+    drawParts(); update();
+  }
+
+  function drawParts() {
+    const box = $('#aParts');
+    if (st.mode !== 'parts') { box.innerHTML = ''; return; }
+    const secs = detail?.sections || [];
+    box.innerHTML = Object.entries(PARTS).map(([k, n]) => `<label class="check" style="margin-bottom:8px"><input type="checkbox" data-part="${k}" ${st.parts.has(k) ? 'checked' : ''}><span>${n}</span></label>`).join('') +
+      (st.parts.has('sections') ? `<div style="margin-left:28px">
+        <label class="check" style="margin-bottom:6px"><input type="radio" name="secMode" value="all" ${st.secMode === 'all' ? 'checked' : ''}><span>All sections</span></label>
+        <label class="check" style="margin-bottom:6px"><input type="radio" name="secMode" value="kinds" ${st.secMode === 'kinds' ? 'checked' : ''}><span>Only these kinds of section <small class="muted">(works for any service)</small></span></label>
+        ${st.secMode === 'kinds' ? `<div class="chips" id="aKinds" style="margin:0 0 10px 28px">${Object.entries(KINDS).map(([k, n]) => `<span class="chip ${st.kinds.has(k) ? 'on' : ''}" data-kind="${k}">${esc(n)}</span>`).join('')}</div>` : ''}
+        ${st.id !== 'latest' ? `<label class="check" style="margin-bottom:6px"><input type="radio" name="secMode" value="pick" ${st.secMode === 'pick' ? 'checked' : ''}><span>Only these sections of this service</span></label>
+        ${st.secMode === 'pick' ? `<div style="margin-left:28px">${secs.map((x, i) => `<label class="check" style="margin-bottom:4px"><input type="checkbox" data-idx="${i + 1}" ${st.indexes.has(i + 1) ? 'checked' : ''}><span>${i + 1}. ${esc(x.title)} <small class="muted">${fmtTime(x.start)}</small></span></label>`).join('')}</div>` : ''}` : ''}
+      </div>` : '');
+  }
+
+  function update() {
+    $('#aUrl').value = `${host}/${path()}`;
+    $('#nSel').textContent = describe(auto.notifySelection);
+    yaml();
+  }
+
+  let yTab = 'event';
+  function yaml() {
+    const url = `${host}/${path()}`;
+    const fmtJson = st.format === 'json';
+    const msg = fmtJson ? (st.mode === 'parts' && !st.parts.has('summary') && !st.parts.has('sections') ? "{{ transcript.content.title }}" : "{{ transcript.content.text[:1000] }}") : "{{ transcript.content[:1000] }}";
+    const help = {
+      event: `Runs when a service finishes. The event carries what you set under step 3 (now: ${describe(auto.notifySelection)}). Change the notify service to your phone.`,
+      rest: 'Add the rest_command to configuration.yaml and the key to secrets.yaml, restart, then call it from any script or automation and use the response.',
+      sensor: 'A sensor whose state is the latest service title, with the chosen parts as attributes (the state itself is limited to 255 characters).'
+    }[yTab];
+    const secret = `# secrets.yaml\nchurch_transcriber_auth: "Bearer ${auto.apiKey}"\n\n`;
+    const out = {
+      event: `alias: Sermon notes when a service is ready
+triggers:
+  - trigger: event
+    event_type: ${auto.events[0]}
+actions:
+  - action: notify.notify
+    data:
+      title: "{{ trigger.event.data.title }}"
+      message: >-
+        {{ (trigger.event.data.summary.text if trigger.event.data.summary else trigger.event.data.text)[:1000] }}
+      data:
+        url: "{{ trigger.event.data.url }}"`,
+      rest: `${secret}# configuration.yaml
+rest_command:
+  church_transcript:
+    url: "${url}"
+    method: GET
+    headers:
+      Authorization: !secret church_transcriber_auth
+    timeout: 60
+
+# In a script or automation:
+actions:
+  - action: rest_command.church_transcript
+    response_variable: transcript
+  - action: notify.notify
+    data:
+      title: ${fmtJson ? '"{{ transcript.content.title }}"' : 'Latest service'}
+      message: "${msg}"`,
+      sensor: `${secret}# configuration.yaml
+rest:
+  - resource: "${host}/api/v1/transcripts/${st.id}${(() => { const q = query().replace(/(^|&)format=[^&]*/, '').replace(/^&/, ''); return q ? '?' + q : ''; })()}"
+    headers:
+      Authorization: !secret church_transcriber_auth
+    scan_interval: 1800
+    sensor:
+      - name: Latest church service
+        value_template: "{{ value_json.title }}"
+        json_attributes: [date, url, summary, scriptures, outline, sections, text]`
+    }[yTab];
+    $('#yHelp').textContent = help; $('#yOut').textContent = out;
+  }
+
+  // ---- wiring ----
+  $('#aId').value = st.id;
+  $('#aId').onchange = e => { st.id = e.target.value; st.indexes.clear(); if (st.secMode === 'pick' && st.id === 'latest') st.secMode = 'all'; loadDetail(); };
+  $('#aLang').onchange = e => { st.lang = e.target.value; update(); };
+  $$('input[name=aMode]').forEach(r => r.onchange = e => { st.mode = e.target.value; drawParts(); update(); });
+  $('#aParts').addEventListener('change', e => {
+    const t = e.target;
+    if (t.dataset.part) { t.checked ? st.parts.add(t.dataset.part) : st.parts.delete(t.dataset.part); drawParts(); }
+    if (t.name === 'secMode') { st.secMode = t.value; drawParts(); }
+    if (t.dataset.idx) { t.checked ? st.indexes.add(+t.dataset.idx) : st.indexes.delete(+t.dataset.idx); }
+    update();
+  });
+  $('#aParts').addEventListener('click', e => { const c = e.target.closest('[data-kind]'); if (!c) return; c.classList.toggle('on'); c.classList.contains('on') ? st.kinds.add(c.dataset.kind) : st.kinds.delete(c.dataset.kind); update(); });
+  $('#aFmt').onchange = e => { st.format = e.target.value; update(); };
+  $('#aMax').oninput = e => { st.max = e.target.value; update(); };
+  $('#aTs').onchange = e => { st.ts = e.target.checked; update(); };
+  $('#aShow').onclick = () => { const k = $('#aKey'); k.type = k.type === 'password' ? 'text' : 'password'; $('#aShow').textContent = k.type === 'password' ? 'Show' : 'Hide'; };
+  $('#aRegen').onclick = async () => {
+    if (!confirm('Create a new API key? Automations using the old key will stop working until you update them.')) return;
+    const r = await api('automation/regenerate-key', { method: 'POST' }); auto.apiKey = r.apiKey; $('#aKey').value = r.apiKey; update(); toast('New API key created');
+  };
+  view.addEventListener('click', async e => {
+    const b = e.target.closest('[data-copy]'); if (!b) return;
+    const el = $('#' + b.dataset.copy); const text = el.value ?? el.textContent;
+    try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+    toast('Copied');
+  });
+  $('#yTabs').onclick = e => { const b = e.target.closest('.tab'); if (!b) return; yTab = b.dataset.y; $$('#yTabs .tab').forEach(x => x.classList.toggle('on', x === b)); yaml(); };
+  $('#aTry').onclick = async () => {
+    const out = $('#aOut'); out.style.display = 'block'; out.textContent = 'Loading…';
+    try {
+      const res = await fetch(path()); let body = await res.text();
+      if (st.format === 'json') { try { body = JSON.stringify(JSON.parse(body), null, 2); } catch { } }
+      $('#aInfo').textContent = `${res.status === 200 ? 'OK' : 'HTTP ' + res.status} · ${body.length.toLocaleString()} characters`;
+      out.textContent = body.length > 6000 ? body.slice(0, 6000) + '\n… (preview shortened)' : body;
+    } catch (err) { out.textContent = err.message; }
+  };
+  $('#nUse').onclick = () => {
+    const q = query().split('&').filter(x => x && !/^(format|lang)=/.test(x)).join('&');
+    auto.notifySelection = q; update(); toast('Notifications will use this selection - press Save');
+  };
+  $('#nSave').onclick = async () => {
+    try {
+      const r = await api('automation', { method: 'PUT', body: { haEvents: $('#nHa').checked, webhookUrl: $('#nHook').value, notifySelection: auto.notifySelection } });
+      auto.notifySelection = r.notifySelection; update(); toast('Notification settings saved');
+    } catch (e) { toast(e.message, true); }
+  };
+  $('#nTest').onclick = async () => {
+    try { const r = await api('automation/test', { method: 'POST' }); toast(`Sent "${r.sent}"`); } catch (e) { toast(e.message, true); }
+  };
+  await loadDetail();
+}

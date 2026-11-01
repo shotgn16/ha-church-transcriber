@@ -1,5 +1,5 @@
 name: Church Service Transcriber
-version: "1.0.0"
+version: "1.1.0"
 slug: church_transcriber
 description: Download church services from YouTube, transcribe them, split them into sections, translate and edit the notes.
 url: https://github.com/shotgn16/ha-church-transcriber
@@ -12,6 +12,8 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:church
 panel_title: Transcriber
+homeassistant_api: true
+hassio_api: true
 ports:
   8099/tcp: null
 ports_description:

@@ -12,6 +12,7 @@ Turns YouTube church services into organised, editable, translatable notes - all
 - **Scheduled & live services**: add a link before the service starts; it waits, then processes when the stream ends.
 - **Watch your church's channel**: new services are picked up and transcribed automatically.
 - **Export** to Word (.docx), PDF (print), Markdown, plain text, web page and subtitles (.srt).
+- **Automations**: fire Home Assistant events when a service is ready, or pull the whole transcript or chosen parts (e.g. just the sermon) through a secured API.
 - Works on **Windows, macOS, Android and iPhone/iPad** - in any browser or the Home Assistant app.
 
 Nothing leaves your network except the download from YouTube: speech-to-text (Whisper) runs inside the add-on and all AI work runs on your Ollama server.
@@ -61,6 +62,88 @@ Set these on the add-on's **Configuration** tab, then start the add-on.
 - **Easiest:** click **Transcriber** in the Home Assistant sidebar. In the **Home Assistant app** on iPhone/Android it is in the sidebar too, and it works remotely wherever your Home Assistant does (e.g. via Nabu Casa).
 - **Home screen app:** open it in Safari/Chrome and choose *Add to Home Screen*.
 - **Direct port (optional):** on the add-on's Network section set a port for `8099/tcp`, set `access_password`, then browse to `http://<home-assistant-ip>:<port>`. Only do this on your home network; use the sidebar for remote access.
+
+## Automations & API
+
+Open the **API** page in the app. It has a point-and-click builder that generates the exact URL and Home Assistant YAML for you, with a **Preview** button. Everything below is what it produces.
+
+### Push: trigger automations when a service is ready
+The add-on fires Home Assistant events:
+
+| Event | When |
+|---|---|
+| `church_transcriber_transcript_ready` | A service has finished transcribing |
+| `church_transcriber_translation_ready` | A translation has finished (`trigger.event.data.translation` is the language) |
+| `church_transcriber_failed` | Processing failed (`trigger.event.data.error`) |
+
+The event carries the parts you choose on the API page (default: overview & sermon notes, scripture references and outline). Example - send the sermon notes to your phone:
+
+```yaml
+alias: Sermon notes when a service is ready
+triggers:
+  - trigger: event
+    event_type: church_transcriber_transcript_ready
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: "{{ trigger.event.data.title }}"
+      message: "{{ trigger.event.data.summary.text[:1000] }}"
+```
+
+You can also set a **webhook** on the API page to receive the same JSON in Node-RED, n8n, etc.
+
+### Pull: fetch a transcript from any automation
+Base address from Home Assistant: `http://<add-on hostname>:8099/api/v1` - the API page shows yours (e.g. `http://a1b2c3d4-church-transcriber:8099`). Every request needs the API key from the API page as the header `Authorization: Bearer <key>` (or `X-API-Key: <key>`).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/transcripts/latest` | The newest finished service (filter with `?channel=` or `?watch=`) |
+| `GET /api/v1/transcripts/{id}` | A specific service (returns HTTP 202 with progress while still processing) |
+| `GET /api/v1/transcripts` | List services (`?status=ready`, `?q=search`, `?limit=`) with their sections |
+| `GET /api/v1/transcripts/{id}/export?format=docx` | Download a file (`docx`, `md`, `txt`, `html`, `srt`; `&lang=`) |
+| `POST /api/v1/transcripts` | Queue a service: `{"url": "https://youtu.be/…", "translate_to": ["es"]}` |
+| `GET /api/v1/status` | What's processing, waiting and ready |
+
+**Choosing the whole transcript or only parts** (query parameters):
+
+| Parameter | Example | Meaning |
+|---|---|---|
+| *(none)* | | The whole transcript: overview, scriptures, outline and all sections |
+| `parts` | `parts=summary,scriptures` | Any of `summary` (overview & sermon notes), `scriptures`, `outline`, `sections` |
+| `kinds` | `kinds=sermon` or `kinds=sermon,scripture` | Only sections of these kinds - works for any service |
+| `sections` | `sections=1,3-5` | Only these section numbers (or section ids) |
+| `lang` | `lang=es` | A finished translation (falls back to the original with a `warning`) |
+| `format` | `format=text` | `json` (default), `text`, `markdown` or `html` |
+| `max_chars` | `max_chars=500` | Shorten the text - handy for notifications and TTS |
+| `timestamps` | `timestamps=1` | Add `[12:34]` timestamps to paragraphs |
+
+Examples: `/api/v1/transcripts/latest?kinds=sermon&format=text` (just the sermon as text) - `/api/v1/transcripts/latest?parts=summary&lang=es` (Spanish sermon notes).
+
+JSON responses always include a ready-made `text` field combining the selected parts, plus `title`, `date`, `url` and structured `summary`, `scriptures`, `outline` and `sections` (each section has `index`, `kind`, `title`, `start`, `timestamp`, `text`, `html`).
+
+Pull on demand with a `rest_command`:
+
+```yaml
+# secrets.yaml
+church_transcriber_auth: "Bearer ct_your_key_here"
+
+# configuration.yaml
+rest_command:
+  church_sermon:
+    url: "http://a1b2c3d4-church-transcriber:8099/api/v1/transcripts/latest?kinds=sermon&max_chars=2000"
+    headers:
+      Authorization: !secret church_transcriber_auth
+
+# in a script/automation
+actions:
+  - action: rest_command.church_sermon
+    response_variable: transcript
+  - action: notify.notify
+    data:
+      message: "{{ transcript.content.text }}"
+```
+
+Calls made through the Home Assistant sidebar don't need the key; everything else does. Use **New key** on the API page if a key is ever exposed.
 
 ## Tips
 - Add your church name, pastors' names and other unusual words in **Settings → Vocabulary**. Whisper uses them to spell names correctly. In the editor, **Find → Add to vocabulary** teaches it a correction for next time.

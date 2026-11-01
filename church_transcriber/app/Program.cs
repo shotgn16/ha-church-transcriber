@@ -26,12 +26,16 @@ builder.Services.AddSingleton<Sectioner>();
 builder.Services.AddSingleton<Translator>();
 builder.Services.AddSingleton<TranscriptionWorker>();
 builder.Services.AddSingleton<Scheduler>();
+builder.Services.AddSingleton<Supervisor>();
+builder.Services.AddSingleton<Notifier>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TranscriptionWorker>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Scheduler>());
 builder.Services.AddHostedService<TranslationWorker>();
 builder.Services.AddHostedService<StartupTasks>();
 builder.Services.AddHttpClient("ollama", c => c.Timeout = TimeSpan.FromMinutes(30));
 builder.Services.AddHttpClient("ollama-short", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddHttpClient("supervisor", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHttpClient("webhook", c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
@@ -46,7 +50,22 @@ app.Use(async (ctx, next) =>
     var password = opts.AccessPassword;
     var remote = ctx.Connection.RemoteIpAddress;
     var isIngress = remote != null && (remote.Equals(IPAddress.Parse("172.30.32.2")) || remote.MapToIPv4().Equals(IPAddress.Parse("172.30.32.2")));
-    if (string.IsNullOrEmpty(password) || isIngress || IPAddress.IsLoopback(remote ?? IPAddress.Loopback)) { await next(); return; }
+    var isLocal = IPAddress.IsLoopback(remote ?? IPAddress.Loopback);
+
+    // Automation API: protected by its own API key (works from HA automations, Node-RED, scripts...).
+    if (ctx.Request.Path.StartsWithSegments("/api/v1"))
+    {
+        if (isIngress || isLocal) { await next(); return; }
+        var key = ctx.RequestServices.GetRequiredService<Store>().GetSettings().ApiKey;
+        var auth = ctx.Request.Headers.Authorization.ToString();
+        var given = auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? auth[7..].Trim()
+            : ctx.Request.Headers["X-API-Key"].FirstOrDefault() ?? ctx.Request.Query["api_key"].FirstOrDefault() ?? "";
+        if (key.Length > 0 && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(given), Encoding.UTF8.GetBytes(key))) { await next(); return; }
+        ctx.Response.StatusCode = 401;
+        await ctx.Response.WriteAsJsonAsync(new { error = "Missing or invalid API key. Send it as 'Authorization: Bearer <key>' - find it on the app's API page." });
+        return;
+    }
+    if (string.IsNullOrEmpty(password) || isIngress || isLocal) { await next(); return; }
     var header = ctx.Request.Headers.Authorization.ToString();
     if (header.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
     {
@@ -199,23 +218,7 @@ api.MapGet("/transcripts/{id}/audio", (string id, AppPaths p) =>
     return File.Exists(file) ? Results.File(file, "audio/mp4", enableRangeProcessing: true) : Results.NotFound();
 });
 
-api.MapGet("/transcripts/{id}/export", (string id, string? format, string? lang, int? ts, Store s) =>
-{
-    var t = s.Snapshot(id);
-    if (t == null) return Results.NotFound();
-    var settings = s.GetSettings();
-    var doc = Exporter.Compose(t, lang, ts.HasValue ? ts == 1 : settings.ExportTimestamps);
-    var baseName = SafeFileName($"{t.UploadDate} {doc.Title}".Trim()) + (string.IsNullOrEmpty(lang) ? "" : $" ({lang})");
-    return (format ?? "docx").ToLowerInvariant() switch
-    {
-        "md" => Results.File(Encoding.UTF8.GetBytes(Exporter.Markdown(doc)), "text/markdown; charset=utf-8", baseName + ".md"),
-        "txt" => Results.File(Encoding.UTF8.GetBytes(Exporter.PlainText(doc)), "text/plain; charset=utf-8", baseName + ".txt"),
-        "html" => Results.File(Encoding.UTF8.GetBytes(Exporter.HtmlPage(doc)), "text/html; charset=utf-8", baseName + ".html"),
-        "print" => Results.Content(Exporter.HtmlPage(doc).Replace("</body>", "<script>onload=()=>print()</script></body>"), "text/html; charset=utf-8"),
-        "srt" => Results.File(Encoding.UTF8.GetBytes(Exporter.Srt(t.Segments)), "application/x-subrip", baseName + ".srt"),
-        _ => Results.File(Exporter.Docx(doc), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", baseName + ".docx"),
-    };
-});
+api.MapGet("/transcripts/{id}/export", (string id, string? format, string? lang, int? ts, Store s) => ExportResult(s, id, format, lang, ts));
 
 // ---------- Channel watches ----------
 api.MapGet("/watches", (Store s) => s.Watches().Select(w => new
@@ -261,7 +264,134 @@ api.MapDelete("/watches/{id}", (string id, Store s) => s.DeleteWatch(id) ? Resul
 
 // ---------- Settings & status ----------
 api.MapGet("/settings", (Store s) => s.GetSettings());
-api.MapPut("/settings", (Settings settings, Store s) => { s.SaveSettings(settings); return Results.Ok(); });
+api.MapPut("/settings", (Settings settings, Store s) =>
+{
+    // The settings page doesn't edit API/notification fields - keep them.
+    var current = s.GetSettings();
+    settings.ApiKey = current.ApiKey; settings.HaEvents = current.HaEvents;
+    settings.WebhookUrl = current.WebhookUrl; settings.NotifySelection = current.NotifySelection;
+    s.SaveSettings(settings);
+    return Results.Ok();
+});
+
+// ---------- Automation settings (used by the API page) ----------
+api.MapGet("/automation", async (Store s, Supervisor sup, Notifier n) =>
+{
+    var st = s.GetSettings();
+    return Results.Ok(new
+    {
+        apiKey = st.ApiKey, haEvents = st.HaEvents, webhookUrl = st.WebhookUrl, notifySelection = st.NotifySelection,
+        internalBaseUrl = await n.InternalBaseUrlAsync(CancellationToken.None), runningInHomeAssistant = sup.Available,
+        events = new[] { Notifier.ReadyEvent, Notifier.TranslationEvent, Notifier.FailedEvent }
+    });
+});
+
+api.MapPut("/automation", (AutomationEdit e, Store s) =>
+{
+    var st = s.GetSettings();
+    if (e.HaEvents != null) st.HaEvents = e.HaEvents.Value;
+    if (e.WebhookUrl != null)
+    {
+        var url = e.WebhookUrl.Trim();
+        if (url.Length > 0 && !Uri.TryCreate(url, UriKind.Absolute, out var u) | (u != null && u.Scheme is not ("http" or "https")))
+            return Results.BadRequest(new { error = "The webhook must be an http(s) address." });
+        st.WebhookUrl = url;
+    }
+    if (e.NotifySelection != null) st.NotifySelection = ContentSelection.Parse(e.NotifySelection).ToQuery();
+    s.SaveSettings(st);
+    return Results.Ok(new { st.NotifySelection });
+});
+
+api.MapPost("/automation/regenerate-key", (Store s) =>
+{
+    var st = s.GetSettings();
+    st.ApiKey = Store.NewApiKey();
+    s.SaveSettings(st);
+    return Results.Ok(new { apiKey = st.ApiKey });
+});
+
+api.MapPost("/automation/test", async (Store s, Notifier n) =>
+{
+    var latest = LatestReady(s, null, null);
+    if (latest == null) return Results.BadRequest(new { error = "Finish transcribing at least one service first." });
+    await n.TranscriptReadyAsync(latest.Id);
+    return Results.Ok(new { sent = latest.Title });
+});
+
+// =====================================================================
+// Automation API v1 - for Home Assistant automations, Node-RED, scripts.
+// Requires the API key unless called through the HA sidebar (ingress).
+// =====================================================================
+var v1 = app.MapGroup("/api/v1");
+
+v1.MapGet("/status", (Store s, JobQueue q) => Results.Ok(new
+{
+    version = typeof(Program).Assembly.GetName().Version?.ToString(3),
+    queue = q.Pending,
+    processing = s.SnapshotAll(t => t.IsActive).Select(t => new { t.Id, t.Title, status = t.Status.ToString().ToLowerInvariant(), progress = Math.Round(t.Progress, 2) }),
+    waiting = s.SnapshotAll(t => t.Status == JobStatus.Waiting).Select(t => new { t.Id, t.Title, t.ScheduledStart }),
+    ready = s.SnapshotAll(t => t.Status == JobStatus.Ready).Count
+}));
+
+v1.MapGet("/transcripts", (Store s, string? status, string? q, int? limit) =>
+{
+    var items = s.SnapshotAll(t => (string.IsNullOrEmpty(status) || t.Status.ToString().Equals(status, StringComparison.OrdinalIgnoreCase))
+                                && (string.IsNullOrEmpty(q) || (t.Title + " " + t.Channel).Contains(q, StringComparison.OrdinalIgnoreCase)))
+        .OrderByDescending(SortKey).Take(Math.Clamp(limit ?? 20, 1, 200))
+        .Select(t => new
+        {
+            id = t.Id, title = t.Title, channel = t.Channel, date = t.UploadDate, url = t.Url, duration = Math.Round(t.Duration),
+            status = t.Status.ToString().ToLowerInvariant(), completed_at = t.CompletedAt, scheduled_start = t.ScheduledStart,
+            language = t.DetectedLanguage, translations = t.Translations.Values.Where(x => x.Status == "done").Select(x => x.Lang),
+            sections = t.Sections.Select((x, i) => new { index = i + 1, id = x.Id, kind = x.Kind, title = x.Title })
+        });
+    return Results.Ok(items);
+});
+
+v1.MapGet("/transcripts/{id}", async (string id, HttpRequest req, Store s, Notifier n, string? channel, string? watch) =>
+{
+    var t = id.Equals("latest", StringComparison.OrdinalIgnoreCase) ? LatestReady(s, channel, watch) : s.Snapshot(id);
+    if (t == null) return Results.NotFound(new { error = id == "latest" ? "No finished transcripts yet." : "Transcript not found." });
+    if (t.Status != JobStatus.Ready)
+        return Results.Json(new { id = t.Id, title = t.Title, status = t.Status.ToString().ToLowerInvariant(), progress = t.Progress, message = t.StatusMessage }, statusCode: 202);
+    var sel = ContentSelection.Parse(req.Query);
+    return sel.Format switch
+    {
+        "text" => Results.Text(ContentApi.Truncate(ContentApi.Text(t, sel), sel.MaxChars).Text, "text/plain; charset=utf-8"),
+        "markdown" => Results.Text(ContentApi.Markdown(t, sel), "text/markdown; charset=utf-8"),
+        "html" => Results.Content(ContentApi.HtmlPage(t, sel), "text/html; charset=utf-8"),
+        _ => Results.Text(ContentApi.Json(t, sel, await n.InternalBaseUrlAsync(CancellationToken.None)).ToJsonString(), "application/json; charset=utf-8")
+    };
+});
+
+v1.MapGet("/transcripts/{id}/export", (string id, string? format, string? lang, int? ts, Store s, string? channel, string? watch) =>
+{
+    var t = id.Equals("latest", StringComparison.OrdinalIgnoreCase) ? LatestReady(s, channel, watch) : s.Snapshot(id);
+    return t == null ? Results.NotFound() : ExportResult(s, t.Id, format, lang, ts);
+});
+
+v1.MapPost("/transcripts", (ApiSubmit body, Store s, JobQueue q) =>
+{
+    var urls = new[] { body.Url }.Concat(body.Urls ?? new()).Where(u => !string.IsNullOrWhiteSpace(u)).Select(u => u!.Trim())
+        .Where(u => u.Contains("youtu", StringComparison.OrdinalIgnoreCase)).Distinct().ToList();
+    if (urls.Count == 0) return Results.BadRequest(new { error = "Send 'url' (or 'urls') with a YouTube link." });
+    var settings = s.GetSettings();
+    var ids = new List<string>();
+    foreach (var raw in urls)
+    {
+        var url = raw.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? raw : "https://" + raw;
+        var vid = YouTube.ExtractVideoId(url);
+        var existing = vid == null ? null : s.SnapshotAll(t => t.VideoId == vid).FirstOrDefault();
+        if (existing != null) { ids.Add(existing.Id); continue; }
+        var t = new Transcript
+        {
+            Url = url, VideoId = vid, Language = string.IsNullOrWhiteSpace(body.Language) ? settings.DefaultLanguage : body.Language!,
+            AutoTranslateTo = body.TranslateTo ?? settings.AutoTranslateTo.ToList(), StatusMessage = "Added via API"
+        };
+        s.Add(t); q.Enqueue(t.Id); ids.Add(t.Id);
+    }
+    return Results.Ok(new { ids });
+});
 
 api.MapGet("/status", async (Store s, JobQueue q, YouTube yt, Ollama ai) =>
 {
@@ -284,6 +414,33 @@ api.MapGet("/status", async (Store s, JobQueue q, YouTube yt, Ollama ai) =>
 
 app.MapFallbackToFile("index.html");
 app.Run();
+
+static IResult ExportResult(Store s, string id, string? format, string? lang, int? ts)
+{
+    var t = s.Snapshot(id);
+    if (t == null) return Results.NotFound();
+    var settings = s.GetSettings();
+    var doc = Exporter.Compose(t, lang, ts.HasValue ? ts == 1 : settings.ExportTimestamps);
+    var baseName = SafeFileName($"{t.UploadDate} {doc.Title}".Trim()) + (string.IsNullOrEmpty(lang) ? "" : $" ({lang})");
+    return (format ?? "docx").ToLowerInvariant() switch
+    {
+        "md" => Results.File(Encoding.UTF8.GetBytes(Exporter.Markdown(doc)), "text/markdown; charset=utf-8", baseName + ".md"),
+        "txt" => Results.File(Encoding.UTF8.GetBytes(Exporter.PlainText(doc)), "text/plain; charset=utf-8", baseName + ".txt"),
+        "html" => Results.File(Encoding.UTF8.GetBytes(Exporter.HtmlPage(doc)), "text/html; charset=utf-8", baseName + ".html"),
+        "print" => Results.Content(Exporter.HtmlPage(doc).Replace("</body>", "<script>onload=()=>print()</script></body>"), "text/html; charset=utf-8"),
+        "srt" => Results.File(Encoding.UTF8.GetBytes(Exporter.Srt(t.Segments)), "application/x-subrip", baseName + ".srt"),
+        _ => Results.File(Exporter.Docx(doc), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", baseName + ".docx"),
+    };
+}
+
+static DateTimeOffset SortKey(Transcript t) =>
+    t.UploadDate != null && DateTimeOffset.TryParse(t.UploadDate, out var d) ? d.AddSeconds((t.CompletedAt ?? t.CreatedAt).TimeOfDay.TotalSeconds) : t.CompletedAt ?? t.CreatedAt;
+
+static Transcript? LatestReady(Store s, string? channel, string? watch) =>
+    s.SnapshotAll(t => t.Status == JobStatus.Ready
+                       && (string.IsNullOrEmpty(channel) || (t.Channel ?? "").Contains(channel, StringComparison.OrdinalIgnoreCase))
+                       && (string.IsNullOrEmpty(watch) || t.WatchId == watch))
+     .OrderByDescending(SortKey).FirstOrDefault();
 
 static string SafeFileName(string s)
 {
