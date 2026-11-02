@@ -25,7 +25,7 @@ RUN apt-get update \
 # yt-dlp (with its YouTube challenge solver) + faster-whisper for local transcription
 RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/venv/bin/pip install --no-cache-dir "yt-dlp[default]" faster-whisper
+ && /opt/venv/bin/pip install --no-cache-dir "yt-dlp[default]" "faster-whisper==1.2.1"
 
 # Deno: the JavaScript runtime yt-dlp needs for YouTube downloads
 RUN set -eux; \

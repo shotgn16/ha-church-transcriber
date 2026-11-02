@@ -2,9 +2,15 @@
 """Local transcription with faster-whisper. Prints PROGRESS lines and writes JSON output."""
 import argparse
 import json
+import os
 import socket
+import subprocess
 import sys
 import time
+
+import numpy as np
+
+SAMPLE_RATE = 16000
 
 # Only look up IPv4 addresses: avoids a common Home Assistant DNS problem where IPv6 (AAAA) lookups fail.
 _getaddrinfo = socket.getaddrinfo
@@ -15,6 +21,23 @@ def _ipv4_getaddrinfo(host, port, family=0, *args, **kwargs):
 
 
 socket.getaddrinfo = _ipv4_getaddrinfo
+
+
+def load_audio(path: str) -> np.ndarray:
+    """Decode to 16 kHz mono float32 with ffmpeg.
+
+    faster-whisper's own decoder relies on PyAV, whose newer releases changed its API
+    (e.g. "open() got an unexpected keyword argument 'metadata_errors'"). Decoding here
+    keeps transcription working whatever PyAV version is installed.
+    """
+    cmd = [os.environ.get("FFMPEG", "ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-i", path, "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]
+    result = subprocess.run(cmd, capture_output=True, check=False)
+    if result.returncode != 0 or not result.stdout:
+        raise RuntimeError("ffmpeg could not decode the audio: " + result.stderr.decode(errors="replace")[-800:])
+    pcm = np.frombuffer(result.stdout, dtype=np.int16)
+    del result
+    return pcm.astype(np.float32) / 32768.0
 
 
 def main() -> int:
@@ -33,27 +56,32 @@ def main() -> int:
     print("STAGE loading model " + a.model, flush=True)
     from faster_whisper import WhisperModel
 
-    # The first run downloads the model; retry a few times if the network hiccups.
-    for attempt in range(1, 5):
-        try:
-            model = WhisperModel(
-                a.model,
-                device="cpu",
-                compute_type=a.compute,
-                download_root=a.models_dir,
-                cpu_threads=a.threads,
-            )
-            break
-        except Exception as e:  # noqa: BLE001
-            if attempt == 4:
-                raise
-            print(f"STAGE model load failed ({e}); retrying in {15 * attempt}s", file=sys.stderr, flush=True)
-            time.sleep(15 * attempt)
+    def load(local_only: bool):
+        return WhisperModel(a.model, device="cpu", compute_type=a.compute, download_root=a.models_dir,
+                            cpu_threads=a.threads, local_files_only=local_only)
+
+    # Use the already-downloaded model if there is one (no network needed); otherwise download it,
+    # retrying a few times if the network hiccups.
+    try:
+        model = load(True)
+    except Exception:  # noqa: BLE001 - not downloaded yet
+        print("STAGE downloading model " + a.model, flush=True)
+        for attempt in range(1, 5):
+            try:
+                model = load(False)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 4:
+                    raise
+                print(f"STAGE model download failed ({e}); retrying in {15 * attempt}s", file=sys.stderr, flush=True)
+                time.sleep(15 * attempt)
 
     language = None if a.language in ("", "auto") else a.language
+    print("STAGE decoding audio", flush=True)
+    audio = load_audio(a.audio)
     print("STAGE transcribing", flush=True)
     segments, info = model.transcribe(
-        a.audio,
+        audio,
         language=language,
         initial_prompt=a.prompt or None,
         beam_size=a.beam,

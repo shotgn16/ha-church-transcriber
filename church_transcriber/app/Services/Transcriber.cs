@@ -28,6 +28,10 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
                 progress(p, $"Transcribing… {p:P0}");
             else if (line.StartsWith("STAGE transcribing"))
                 progress(0, "Transcribing…");
+            else if (line.StartsWith("STAGE downloading model"))
+                progress(0, "Downloading the Whisper model (first run only, about 1.6 GB)…");
+            else if (line.StartsWith("STAGE decoding"))
+                progress(0, "Preparing audio…");
         }, captureStdout: false);
 
         if (!r.Ok || !File.Exists(outJson))
@@ -47,15 +51,18 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
 
     private string ExplainFailure(ProcResult r)
     {
-        var t = r.StdErrTail.ToLowerInvariant();
-        var last = r.StdErrTail.Split('\n').LastOrDefault(l => l.Trim().Length > 0) ?? "";
-        if (r.ExitCode is 137 or -9 || t.Contains("killed") || t.Contains("memoryerror") || t.Contains("out of memory") || t.Contains("bad_alloc"))
+        var lines = r.StdErrTail.Split('\n').Where(l => l.Trim().Length > 0).ToList();
+        var last = lines.LastOrDefault() ?? "";
+        // Judge by the actual error (the last traceback line), not warnings printed earlier in the log.
+        var t = (lines.LastOrDefault(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"^\s*[\w.]+(Error|Exception|Exit)\b")) ?? last).ToLowerInvariant();
+        var all = r.StdErrTail.ToLowerInvariant();
+        if (r.ExitCode is 137 or -9 || all.Contains("killed") || t.Contains("memoryerror") || t.Contains("out of memory") || t.Contains("bad_alloc"))
             return $"Whisper ran out of memory. Give the Home Assistant VM more RAM (6 GB or more for '{opts.WhisperModel}'), or set whisper_model to 'medium' or 'small' on the add-on's Configuration tab.";
         if (r.ExitCode is 132 or -4 || t.Contains("illegal instruction"))
             return "This CPU doesn't expose the instructions Whisper needs (AVX/AVX2). In ESXi, set the VM's CPU compatibility / EVC mode to expose AVX2 to the guest, then restart the VM.";
-        if (t.Contains("huggingface") || t.Contains("hf_hub") || t.Contains("connection") || t.Contains("localentrynotfound"))
+        if (all.Contains("stage downloading model") && (t.Contains("connection") || t.Contains("localentrynotfound") || t.Contains("timeout") || t.Contains("resolve")))
             return "Couldn't download the Whisper model (the first run downloads it from huggingface.co). Check the Home Assistant machine's internet access, then press Try again.";
-        if (t.Contains("no space left")) return "The Home Assistant disk is full - free some space and try again.";
+        if (all.Contains("no space left")) return "The Home Assistant disk is full - free some space and try again.";
         if (r.ExitCode == -1) return "Couldn't start Whisper: " + last;
         return "Transcription failed: " + last;
     }
