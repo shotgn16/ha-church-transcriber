@@ -22,8 +22,10 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
         if (!string.IsNullOrWhiteSpace(prompt)) { args.Add("--prompt"); args.Add(prompt); }
 
         progress(0, $"Loading Whisper model '{opts.WhisperModel}' (the first run downloads it)…");
+        var stage = "";
         var r = await Proc.RunAsync(paths.Python, args, ct, line =>
         {
+            if (line.StartsWith("STAGE ")) stage = line[6..];
             if (line.StartsWith("PROGRESS ") && double.TryParse(line[9..], NumberStyles.Float, CultureInfo.InvariantCulture, out var p))
                 progress(p, $"Transcribing… {p:P0}");
             else if (line.StartsWith("STAGE transcribing"))
@@ -35,7 +37,7 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
         }, captureStdout: false);
 
         if (!r.Ok || !File.Exists(outJson))
-            throw new ToolException(ExplainFailure(r), $"exit code {r.ExitCode}\n{r.StdErrTail}");
+            throw new ToolException(ExplainFailure(r, stage), $"exit code {r.ExitCode} (stage: {stage})\n{r.StdErrTail}");
 
         using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(outJson, ct));
         var lang = doc.RootElement.TryGetProperty("language", out var l) ? l.GetString() : null;
@@ -49,7 +51,7 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
         return new TranscriptionResult(lang, CleanHallucinations(segs));
     }
 
-    private string ExplainFailure(ProcResult r)
+    private string ExplainFailure(ProcResult r, string stage)
     {
         var lines = r.StdErrTail.Split('\n').Where(l => l.Trim().Length > 0).ToList();
         var last = lines.LastOrDefault() ?? "";
@@ -60,8 +62,10 @@ public sealed class Transcriber(AppPaths paths, AddonOptions opts)
             return $"Whisper ran out of memory. Give the Home Assistant VM more RAM (6 GB or more for '{opts.WhisperModel}'), or set whisper_model to 'medium' or 'small' on the add-on's Configuration tab.";
         if (r.ExitCode is 132 or -4 || t.Contains("illegal instruction"))
             return "This CPU doesn't expose the instructions Whisper needs (AVX/AVX2). In ESXi, set the VM's CPU compatibility / EVC mode to expose AVX2 to the guest, then restart the VM.";
-        if (all.Contains("stage downloading model") && (t.Contains("connection") || t.Contains("localentrynotfound") || t.Contains("timeout") || t.Contains("resolve")))
-            return "Couldn't download the Whisper model (the first run downloads it from huggingface.co). Check the Home Assistant machine's internet access, then press Try again.";
+        // The STAGE markers come through stdout; the "download failed" retries come through stderr.
+        if (stage.StartsWith("downloading model") || stage.StartsWith("model download failed") || all.Contains("stage model download failed"))
+            return "Couldn't download the Whisper model (the first run downloads it from huggingface.co, about 1.6 GB). " +
+                   "Check the Home Assistant machine's internet/DNS - it will retry automatically. Detail: " + last;
         if (all.Contains("no space left")) return "The Home Assistant disk is full - free some space and try again.";
         if (r.ExitCode == -1) return "Couldn't start Whisper: " + last;
         return "Transcription failed: " + last;

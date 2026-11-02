@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4
+- If the first-run Whisper model download fails (network/DNS), the service now shows "Couldn't download the Whisper model" and retries automatically, instead of a generic "Transcription failed".
+- Verified end to end: the add-on's transcription script runs the full faster-whisper pipeline with PyAV 19 (the version that caused the `metadata_errors` crash).
+
 ## 1.1.3
 - **Fixed "TypeError: open() got an unexpected keyword argument 'metadata_errors'"** during transcription. A new release of the PyAV library broke faster-whisper's audio reader; the add-on now decodes audio itself with ffmpeg, so PyAV updates can't break it again. faster-whisper is pinned to the tested version (1.2.1).
 - Whisper uses the already-downloaded model without contacting huggingface.co on every run (one less network dependency).

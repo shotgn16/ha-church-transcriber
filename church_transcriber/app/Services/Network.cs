@@ -30,8 +30,13 @@ public static class Network
         return IsDns(ex) || TransientMarkers.Any(t.Contains);
     }
 
-    public static string Describe(Exception ex) =>
-        IsDns(ex) ? "Home Assistant couldn't look up YouTube's address (DNS)" : "Couldn't reach YouTube (network problem)";
+    public static string Describe(Exception ex)
+    {
+        var model = ex.Message.Contains("Whisper model", StringComparison.OrdinalIgnoreCase);
+        if (model) return IsDns(ex) ? "Couldn't download the Whisper model - Home Assistant couldn't look up huggingface.co (DNS)"
+                                    : "Couldn't download the Whisper model (network problem)";
+        return IsDns(ex) ? "Home Assistant couldn't look up YouTube's address (DNS)" : "Couldn't reach YouTube (network problem)";
+    }
 
     public static async Task<List<NetCheck>> CheckAsync(CancellationToken ct)
     {
