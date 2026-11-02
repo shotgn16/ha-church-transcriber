@@ -27,7 +27,9 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
     {
         yield return "--no-warnings";
         yield return "--ignore-config";
-        foreach (var a in new[] { "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3" })
+        // --force-ipv4: avoids a common Home Assistant DNS problem where IPv6 (AAAA) lookups fail and take the IPv4 lookup down with them.
+        foreach (var a in new[] { "--force-ipv4", "--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "5",
+                                  "--retry-sleep", "http:exp=2:60", "--retry-sleep", "fragment:exp=2:60", "--retry-sleep", "extractor:exp=2:60" })
             yield return a;
         if (!string.IsNullOrWhiteSpace(opts.CookiesFile) && File.Exists(opts.CookiesFile))
         {
@@ -195,8 +197,10 @@ public sealed partial class YouTube(AppPaths paths, AddonOptions opts, ILogger<Y
             return "YouTube refused the download (HTTP 403). Restart the add-on to update the downloader, then press Try again. Detail: " + last;
         if (t.Contains("http error 429") || t.Contains("too many requests"))
             return "YouTube is rate-limiting this connection. Wait an hour, or add a cookies file, then try again.";
-        if (t.Contains("name resolution") || t.Contains("timed out") || t.Contains("unable to connect") || t.Contains("network is unreachable"))
-            return "Couldn't connect to YouTube - check the Home Assistant machine's internet/DNS. Detail: " + last;
+        if (t.Contains("name resolution") || t.Contains("failed to resolve") || t.Contains("name or service not known"))
+            return "Home Assistant couldn't look up YouTube's address (a DNS problem on your Home Assistant machine, not the video). See Documentation → Troubleshooting → DNS.";
+        if (t.Contains("timed out") || t.Contains("unable to connect") || t.Contains("network is unreachable") || t.Contains("connection reset"))
+            return "Couldn't connect to YouTube - check the Home Assistant machine's internet connection. Detail: " + last;
         if (t.Contains("requested format is not available")) return "YouTube offered no downloadable audio for this video yet - if it was just streamed, try again later.";
         return "Detail: " + last;
     }

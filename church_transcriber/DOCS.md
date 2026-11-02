@@ -153,7 +153,19 @@ Calls made through the Home Assistant sidebar don't need the key; everything els
 
 ## Troubleshooting
 
-If a service fails, open it: the red message explains the cause, **Show details** has the full error (with a **Copy details** button), and **Try again** resumes from where it stopped - there's no need to delete the service.
+If a service fails, open it: the red message explains the cause (temporary network problems retry automatically first), **Show details** has the full error (with a **Copy details** button), and **Try again** resumes from where it stopped - there's no need to delete the service.
+
+**DNS: "Home Assistant couldn't look up YouTube's address" / "Temporary failure in name resolution"**
+This means Home Assistant itself couldn't turn `www.youtube.com` into an address - it's a network setting on the Home Assistant machine, not a problem with the video. The add-on now retries automatically for about two hours (you'll see **Retrying**), and the **Internet** row on the app's **Settings** page shows whether lookups currently work.
+
+If it keeps happening, point Home Assistant at reliable DNS servers. Install the **Terminal & SSH** add-on, open it and run:
+
+```
+ha dns options --servers dns://1.1.1.1 --servers dns://8.8.8.8
+ha dns restart
+```
+
+Then restart this add-on. Other things worth checking: the VM's network adapter has a working gateway/DNS in ESXi, and your router or Pi-hole/AdGuard isn't blocking YouTube domains. `ha dns info` and `ha resolution info` in the terminal show Home Assistant's DNS status.
 
 **"YouTube asked to confirm this isn't a bot"** - YouTube sometimes blocks automated downloads. Give the add-on your YouTube cookies:
 1. On a computer, install a browser extension that exports cookies in *Netscape / cookies.txt* format (for example "Get cookies.txt LOCALLY" for Chrome/Edge, or "cookies.txt" for Firefox).

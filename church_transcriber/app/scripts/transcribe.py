@@ -2,8 +2,19 @@
 """Local transcription with faster-whisper. Prints PROGRESS lines and writes JSON output."""
 import argparse
 import json
+import socket
 import sys
 import time
+
+# Only look up IPv4 addresses: avoids a common Home Assistant DNS problem where IPv6 (AAAA) lookups fail.
+_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_getaddrinfo(host, port, family=0, *args, **kwargs):
+    return _getaddrinfo(host, port, socket.AF_INET if family in (0, socket.AF_UNSPEC) else family, *args, **kwargs)
+
+
+socket.getaddrinfo = _ipv4_getaddrinfo
 
 
 def main() -> int:
@@ -22,13 +33,22 @@ def main() -> int:
     print("STAGE loading model " + a.model, flush=True)
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(
-        a.model,
-        device="cpu",
-        compute_type=a.compute,
-        download_root=a.models_dir,
-        cpu_threads=a.threads,
-    )
+    # The first run downloads the model; retry a few times if the network hiccups.
+    for attempt in range(1, 5):
+        try:
+            model = WhisperModel(
+                a.model,
+                device="cpu",
+                compute_type=a.compute,
+                download_root=a.models_dir,
+                cpu_threads=a.threads,
+            )
+            break
+        except Exception as e:  # noqa: BLE001
+            if attempt == 4:
+                raise
+            print(f"STAGE model load failed ({e}); retrying in {15 * attempt}s", file=sys.stderr, flush=True)
+            time.sleep(15 * attempt)
 
     language = None if a.language in ("", "auto") else a.language
     print("STAGE transcribing", flush=True)

@@ -23,6 +23,7 @@ public sealed class Transcript
     public string? StatusMessage { get; set; }
     public string? Error { get; set; }
     public string? ErrorDetails { get; set; }
+    public int RetryCount { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? NextCheck { get; set; }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2
+- **Network problems no longer fail a service.** DNS failures ("Temporary failure in name resolution"), timeouts and YouTube server errors now retry automatically over about two hours, shown as **Retrying** with the next attempt time and a **Try now** button.
+- Downloads use IPv4-only lookups (yt-dlp and the Whisper model download), avoiding a common Home Assistant DNS problem.
+- yt-dlp waits between retries instead of retrying instantly.
+- New **Internet** check on the Settings page and in the add-on log at start-up.
+- Streams YouTube marks as "still processing" are tried straight away instead of only waiting; gives up after 2 days. Services whose scheduled start passed long ago are checked hourly.
+- DNS troubleshooting steps in the documentation.
+
 ## 1.1.1
 - **Try again now resumes** from where a failed service stopped (keeps the downloaded audio and finished transcription) - no need to delete and re-add.
 - Clear, plain-English error messages for YouTube bot checks, HTTP 403s, private/members-only videos, network problems, Whisper running out of memory, missing CPU features and model download failures, plus a "Show details" box with the full error to copy.

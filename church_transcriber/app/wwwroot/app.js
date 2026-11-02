@@ -46,7 +46,7 @@ const ACTIVE = ['queued', 'downloading', 'transcribing', 'sectioning'];
 function statusPill(t) {
   const s = t.status;
   const cls = s === 'ready' ? 'ready' : s === 'failed' ? 'failed' : s === 'waiting' ? 'waiting' : ACTIVE.includes(s) ? 'active' : '';
-  const label = { queued: 'Queued', waiting: t.liveStatus === 'is_live' ? 'Live now' : 'Scheduled', downloading: 'Downloading',
+  const label = { queued: 'Queued', waiting: t.retryCount > 0 ? 'Retrying' : t.liveStatus === 'is_live' ? 'Live now' : 'Scheduled', downloading: 'Downloading',
     transcribing: 'Transcribing', sectioning: 'Organising', ready: 'Ready', failed: 'Failed', cancelled: 'Cancelled' }[s] || s;
   return `<span class="pill ${cls}">${label}</span>`;
 }
@@ -94,6 +94,7 @@ async function viewLibrary() {
     }
     $('#list').innerHTML = shown.map(t => {
       const msg = t.status === 'failed' ? `<div class="msg err">${esc(t.error || 'Failed')}</div>`
+        : t.status === 'waiting' && t.retryCount > 0 ? `<div class="msg">${esc(t.statusMessage || '')} · next try ${esc(fmtDate(t.nextCheck))}</div>`
         : t.status === 'waiting' ? `<div class="msg">${t.scheduledStart ? 'Starts ' + esc(fmtDate(t.scheduledStart)) + ' · ' : ''}${esc(t.statusMessage || '')}</div>`
         : t.status !== 'ready' ? `<div class="msg">${esc(t.statusMessage || '')}</div>` : '';
       const bar = ACTIVE.includes(t.status) ? `<div class="bar"><i style="width:${Math.round((t.progress || 0) * 100)}%"></i></div>` : '';
@@ -205,18 +206,22 @@ async function viewEditor(id) {
 
   function renderProgress() {
     const waiting = T.status === 'waiting';
+    const retrying = waiting && T.retryCount > 0;
     $('#body').innerHTML = `<div class="card status-box">
-      <h2>${waiting ? (T.liveStatus === 'is_live' ? 'Service is live' : 'Scheduled service') : T.status === 'failed' ? 'Processing failed' : T.status === 'cancelled' ? 'Cancelled' : 'Working on it…'}</h2>
-      ${waiting && T.scheduledStart ? `<p>Starts ${esc(fmtDate(T.scheduledStart))}</p>` : ''}
+      <h2>${retrying ? 'Network problem - retrying automatically' : waiting ? (T.liveStatus === 'is_live' ? 'Service is live' : 'Scheduled service') : T.status === 'failed' ? 'Processing failed' : T.status === 'cancelled' ? 'Cancelled' : 'Working on it…'}</h2>
+      ${waiting && !retrying && T.scheduledStart ? `<p>Starts ${esc(fmtDate(T.scheduledStart))}</p>` : ''}
       <p class="${T.status === 'failed' ? '' : 'muted'}" style="${T.status === 'failed' ? 'color:var(--bad)' : ''}">${esc(T.status === 'failed' ? T.error : T.statusMessage || '')}</p>
       ${ACTIVE.includes(T.status) ? `<div class="bar"><i style="width:${Math.round((T.progress || 0) * 100)}%"></i></div>` : ''}
       ${waiting && T.nextCheck ? `<p class="muted">Next check ${esc(fmtDate(T.nextCheck))}</p>` : ''}
-      ${T.status === 'failed' && T.errorDetails ? `<details style="text-align:left;max-width:640px;margin:10px auto"><summary style="cursor:pointer">Show details</summary>
+      ${retrying ? `<p style="font-size:14px">Nothing to do - it will try again by itself. If this keeps happening, see <b>Documentation → Troubleshooting → DNS</b>,
+        or press <b>Try now</b> once you've fixed it.</p><button class="btn primary" id="retryNow">Try now</button>` : ''}
+      ${(T.status === 'failed' || retrying) && T.errorDetails ? `<details style="text-align:left;max-width:640px;margin:10px auto"><summary style="cursor:pointer">Show details</summary>
         <pre class="codebox" id="errDetails">${esc(T.errorDetails)}</pre><button class="btn small" id="copyErr">Copy details</button></details>` : ''}
       ${['failed', 'cancelled'].includes(T.status) ? `<button class="btn primary" id="retryBtn">Try again</button>
         <p class="muted" style="font-size:13px">Try again picks up where it stopped - no need to delete the service.</p>` : ''}
       <p class="muted" style="font-size:13px;margin-top:16px">You can close this page - processing continues on your Home Assistant.</p></div>`;
     $('#retryBtn') && ($('#retryBtn').onclick = () => moreAction('retry'));
+    $('#retryNow') && ($('#retryNow').onclick = () => moreAction('retry'));
     $('#copyErr') && ($('#copyErr').onclick = async () => {
       const text = `${T.error}\n\n${T.errorDetails}`;
       try { await navigator.clipboard.writeText(text); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
@@ -678,6 +683,7 @@ async function viewSettings() {
       <div class="card pad">
         <h3 style="margin-top:0;font-family:var(--serif)">System status</h3>
         <dl class="kv">
+          <dt>Internet</dt><dd>${(STATUS.network || []).map(n => n.ok ? `<span class="pill ready">OK</span> ${esc(n.host)}` : `<span class="pill failed">DNS failing</span> ${esc(n.host)} <small style="color:var(--bad)">${esc(n.error || '')}</small>`).join('<br>') || '-'}</dd>
           <dt>Ollama</dt><dd>${o.reachable ? `<span class="pill ready">Connected</span> ${esc(o.url)}` : `<span class="pill failed">Not reachable</span> ${esc(o.url || '')}<br><small style="color:var(--bad)">${esc(o.error || '')}</small>`}</dd>
           <dt>Active model</dt><dd>${esc(o.active || '-')}</dd>
           <dt>AI sections</dt><dd>${STATUS.useAiForSections ? 'On' : 'Off (built-in detector)'}</dd>

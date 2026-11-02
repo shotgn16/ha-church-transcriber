@@ -76,7 +76,7 @@ public sealed class Store
             return _transcripts.Values.OrderByDescending(t => t.ScheduledStart ?? t.CreatedAt).Select(t => (object)new
             {
                 t.Id, t.Url, t.VideoId, t.Title, t.Channel, t.Thumbnail, t.Duration, t.UploadDate, t.LiveStatus,
-                t.ScheduledStart, t.Status, t.Progress, t.StatusMessage, t.Error, t.CreatedAt, t.UpdatedAt,
+                t.ScheduledStart, t.Status, t.Progress, t.StatusMessage, t.Error, t.RetryCount, t.CreatedAt, t.UpdatedAt,
                 t.CompletedAt, t.Language, t.DetectedLanguage, t.WatchId, t.NextCheck,
                 SectionCount = t.Sections.Count,
                 Translations = t.Translations.Values.Select(x => new { x.Lang, x.Status, x.Progress }).ToList()

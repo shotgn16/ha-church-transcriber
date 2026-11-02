@@ -162,7 +162,7 @@ api.MapPost("/transcripts/{id}/retry", (string id, Store s, JobQueue q, AppPaths
     var full = s.Snapshot(id)?.Status == JobStatus.Ready; // "transcribe again" on a finished service = start from scratch
     if (!s.Update(id, t =>
     {
-        t.Status = JobStatus.Queued; t.Error = null; t.ErrorDetails = null; t.Progress = 0;
+        t.Status = JobStatus.Queued; t.Error = null; t.ErrorDetails = null; t.Progress = 0; t.RetryCount = 0;
         t.StatusMessage = full ? "Waiting in queue" : "Resuming - waiting in queue";
         if (full) { t.Segments = new(); t.Sections = new(); t.HasAudio = false; }
     })) return Results.NotFound();
@@ -409,9 +409,11 @@ api.MapGet("/status", async (Store s, JobQueue q, YouTube yt, Ollama ai) =>
         ollama = new { reachable = true, url = opts.OllamaUrl, active = await ai.ResolveModelAsync(CancellationToken.None), models, error = (string?)null };
     }
     catch (Exception ex) { ollama = new { reachable = false, url = opts.OllamaUrl, active = (string?)null, models = Array.Empty<OllamaModelInfo>(), error = ex.Message }; }
+    var network = await Network.CheckAsync(CancellationToken.None);
     return Results.Ok(new
     {
         version = typeof(Program).Assembly.GetName().Version?.ToString(3),
+        network,
         whisper = new { model = opts.WhisperModel, compute = opts.WhisperCompute },
         ollama, useAiForSections = opts.UseAiForSections, downloadVideo = opts.DownloadVideo,
         ytdlp = await yt.VersionAsync(), queue = q.Pending,

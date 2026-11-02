@@ -71,6 +71,7 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
             {
                 store.Update(id, t => { t.Status = JobStatus.Cancelled; t.StatusMessage = "Cancelled"; });
             }
+            catch (Exception ex) when (Network.IsTransient(ex) && ScheduleRetry(id, ex)) { }
             catch (Exception ex)
             {
                 var details = ex is ToolException te ? te.Details : ex.ToString();
@@ -86,11 +87,39 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         }
     }
 
+    // Network hiccups (DNS, timeouts, YouTube 5xx) retry automatically instead of failing: ~2 hours in total.
+    private static readonly int[] RetryMinutes = { 2, 5, 10, 20, 30, 60 };
+
+    private bool ScheduleRetry(string id, Exception ex)
+    {
+        var t = store.Snapshot(id);
+        if (t == null || t.RetryCount >= RetryMinutes.Length) return false; // out of retries -> normal failure
+        var attempt = t.RetryCount + 1;
+        var next = DateTimeOffset.UtcNow.AddMinutes(RetryMinutes[t.RetryCount]);
+        var details = ex is ToolException te ? te.Details : ex.Message;
+        log.LogWarning("Job {Id}: network problem, retry {N}/{Max} at {Next:HH:mm}: {Msg}", id, attempt, RetryMinutes.Length, next, ex.Message);
+        store.Update(id, x =>
+        {
+            x.Status = JobStatus.Waiting; x.RetryCount = attempt; x.NextCheck = next; x.Progress = 0;
+            x.Error = ex.Message; x.ErrorDetails = details.Length > 6000 ? details[^6000..] : details;
+            x.StatusMessage = $"{Network.Describe(ex)} - retrying automatically (attempt {attempt + 1} of {RetryMinutes.Length + 1})";
+        });
+        return true;
+    }
+
     private async Task ProcessAsync(string id, CancellationToken ct)
     {
         var t = store.Snapshot(id);
         if (t == null || t.Status is JobStatus.Ready or JobStatus.Cancelled) return;
         var settings = store.GetSettings();
+
+        // Resuming after a failure with the transcription already done: no need to contact YouTube again.
+        if (t.Segments.Count > 0)
+        {
+            await OrganiseAsync(id, ct);
+            QueueAutoTranslations(id, t.DetectedLanguage);
+            return;
+        }
 
         // ---- 1. Look up the video ----
         Set(id, JobStatus.Downloading, 0, "Checking the video on YouTube…");
@@ -102,30 +131,26 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
             x.ScheduledStart = info.ReleaseTime ?? x.ScheduledStart; x.Chapters = info.Chapters; x.Error = null; x.ErrorDetails = null;
         });
 
-        // Resuming after a failure: reuse what's already done.
-        if (t.Segments.Count > 0)
-        {
-            await OrganiseAsync(id, ct);
-            QueueAutoTranslations(id, t.DetectedLanguage);
-            return;
-        }
-
         // ---- 2. Scheduled premieres / live streams: wait until the recording is available ----
-        if (info.LiveStatus is "is_upcoming" or "is_live" or "post_live")
+        var now = DateTimeOffset.UtcNow;
+        if (info.LiveStatus is "is_upcoming" or "is_live")
         {
-            var now = DateTimeOffset.UtcNow;
             DateTimeOffset next; string msg;
             if (info.LiveStatus == "is_upcoming")
             {
                 var start = info.ReleaseTime ?? now.AddMinutes(30);
-                next = start > now.AddMinutes(10) ? start.AddMinutes(5) : now.AddMinutes(10);
-                msg = info.ReleaseTime.HasValue ? "Scheduled - will start automatically after the service begins" : "Scheduled - start time not published yet";
+                if (start < now.AddHours(-6))
+                {
+                    next = now.AddHours(1);
+                    msg = "The scheduled start has passed but the service hasn't started - it may have been rescheduled. Checking hourly";
+                }
+                else
+                {
+                    next = start > now.AddMinutes(10) ? start.AddMinutes(5) : now.AddMinutes(10);
+                    msg = info.ReleaseTime.HasValue ? "Scheduled - will start automatically after the service begins" : "Scheduled - start time not published yet";
+                }
             }
-            else
-            {
-                next = now.AddMinutes(info.LiveStatus == "post_live" ? 15 : 10);
-                msg = info.LiveStatus == "is_live" ? "Live now - will transcribe when the stream ends" : "Stream ended - waiting for YouTube to finish processing";
-            }
+            else { next = now.AddMinutes(10); msg = "Live now - will transcribe when the stream ends"; }
             store.Update(id, x => { x.Status = JobStatus.Waiting; x.NextCheck = next; x.StatusMessage = msg; x.Progress = 0; });
             return;
         }
@@ -134,12 +159,28 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         var lastSave = DateTime.MinValue;
         if (!(t.HasAudio && File.Exists(paths.AudioFile(id))))
         {
-            await yt.DownloadAudioAsync(t.Url, id, p =>
+            try
             {
-                if ((DateTime.UtcNow - lastSave).TotalSeconds < 2) return;
-                lastSave = DateTime.UtcNow;
-                Set(id, JobStatus.Downloading, p, $"Downloading audio… {p:P0}");
-            }, ct);
+                await yt.DownloadAudioAsync(t.Url, id, p =>
+                {
+                    if ((DateTime.UtcNow - lastSave).TotalSeconds < 2) return;
+                    lastSave = DateTime.UtcNow;
+                    Set(id, JobStatus.Downloading, p, $"Downloading audio… {p:P0}");
+                }, ct);
+            }
+            catch (ToolException ex) when (info.LiveStatus == "post_live" && !Network.IsTransient(ex))
+            {
+                // The stream has ended but YouTube hasn't finished preparing the recording yet. Usually downloadable
+                // straight away; if not, wait - but give up after 2 days.
+                if (now - t.CreatedAt > TimeSpan.FromDays(2)) throw new ToolException(
+                    "YouTube still hasn't made the recording of this stream available after 2 days. Press Try again later.", ex.Details);
+                store.Update(id, x =>
+                {
+                    x.Status = JobStatus.Waiting; x.NextCheck = now.AddMinutes(15); x.Progress = 0;
+                    x.StatusMessage = "Stream ended - waiting for YouTube to finish processing the recording";
+                });
+                return;
+            }
             store.Update(id, x => x.HasAudio = true);
         }
 
@@ -194,7 +235,7 @@ public sealed class TranscriptionWorker(JobQueue queue, Store store, YouTube yt,
         }
         store.Update(id, x =>
         {
-            x.Sections = sections; x.SummaryHtml = plan.SummaryHtml; x.Scriptures = scriptures; x.Edited = false;
+            x.Sections = sections; x.SummaryHtml = plan.SummaryHtml; x.Scriptures = scriptures; x.Edited = false; x.RetryCount = 0;
             x.Status = JobStatus.Ready; x.Progress = 1; x.CompletedAt = DateTimeOffset.UtcNow;
             x.StatusMessage = plan.Method switch
             {
@@ -288,7 +329,7 @@ public sealed class Scheduler(JobQueue queue, Store store, YouTube yt, ILogger<S
 {
     protected override async Task ExecuteAsync(CancellationToken stopping)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
         do
         {
             try
@@ -361,6 +402,10 @@ public sealed class StartupTasks(AddonOptions opts, AppPaths paths, ILogger<Star
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        var net = await Network.CheckAsync(ct);
+        foreach (var check in net)
+            if (check.Ok) log.LogInformation("Network check: {Host} OK", check.Host);
+            else log.LogWarning("Network check: can't resolve {Host} ({Error}). Downloads will fail until Home Assistant's DNS works - see Documentation > Troubleshooting.", check.Host, check.Error);
         if (!opts.UpdateYtdlpOnStart || !File.Exists(paths.Pip)) return;
         log.LogInformation("Updating yt-dlp…");
         var r = await Proc.RunAsync(paths.Pip, new[] { "install", "--no-cache-dir", "-U", "yt-dlp[default]" }, ct, captureStdout: false);
