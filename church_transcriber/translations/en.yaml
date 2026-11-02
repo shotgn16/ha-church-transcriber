@@ -1,7 +1,7 @@
 configuration:
   whisper_model:
     name: Whisper model (speech-to-text)
-    description: "Runs locally inside the add-on. large-v3-turbo is the best balance of accuracy and speed on x86. Use medium or small if your VM has fewer than 4 vCPUs."
+    description: "Runs locally inside the add-on. Needs roughly this much VM RAM: tiny/base 3 GB, small 4 GB, medium or distil-large-v3 (English only) 5 GB, large-v3-turbo 6 GB (default, recommended), large-v3 8 GB. See the Documentation tab for details."
   whisper_compute:
     name: Whisper compute type
     description: int8 is fastest on CPUs and uses the least memory.

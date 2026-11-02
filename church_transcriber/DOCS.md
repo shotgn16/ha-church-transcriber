@@ -2,7 +2,7 @@
 
 Turns YouTube church services into organised, editable, translatable notes - all on your own network.
 
-- **Paste a YouTube link** (or several) and the service is downloaded and transcribed.
+- **Paste a YouTube link** (or several) and the service is downloaded and transcribed. Mobile and share links work too.
 - **Organised automatically** into Welcome, Worship, Prayer, Announcements, Scripture Reading, Sermon, Offering, Communion, Benediction and more - using the video's own chapters if the church added them, otherwise your local AI model, otherwise a built-in detector.
 - **Overview and sermon notes** (title, main scripture, key points) written by your AI model.
 - **Scripture references** detected and listed (e.g. "Romans 8:28-39"), each clickable to jump there.
@@ -13,55 +13,108 @@ Turns YouTube church services into organised, editable, translatable notes - all
 - **Watch your church's channel**: new services are picked up and transcribed automatically.
 - **Export** to Word (.docx), PDF (print), Markdown, plain text, web page and subtitles (.srt).
 - **Automations**: fire Home Assistant events when a service is ready, or pull the whole transcript or chosen parts (e.g. just the sermon) through a secured API.
+- **Self-healing**: network hiccups retry automatically, and **Try again** resumes a failed service from where it stopped.
 - Works on **Windows, macOS, Android and iPhone/iPad** - in any browser or the Home Assistant app.
 
-Nothing leaves your network except the download from YouTube: speech-to-text (Whisper) runs inside the add-on and all AI work runs on your Ollama server.
+Nothing leaves your network except the downloads from YouTube (and the one-time Whisper model download): speech-to-text (Whisper) runs inside the add-on and all AI work runs on your Ollama server.
+
+## Requirements
+
+| | Needed |
+|---|---|
+| Home Assistant | Home Assistant OS or Supervised (add-ons are required) |
+| CPU | 64-bit x86 (`amd64`) or ARM (`aarch64`). On x86 the CPU must support **AVX2** - in a VM, make sure it's passed through (see [ESXi / VM notes](#esxi--virtual-machine-notes)) |
+| vCPUs | 2 minimum, **4 or more recommended** - transcription speed scales with cores |
+| RAM | Depends on the Whisper model - see the [model table](#choosing-a-whisper-model). **6 GB for the VM** suits the default model |
+| Disk | The model (75 MB - 3.1 GB, downloaded once) + about 25 MB of audio per hour of service + transcripts (a few hundred KB each) |
+| Internet | To reach YouTube and, once, huggingface.co (model download) |
+| Ollama (optional) | Any machine on your network running [Ollama](https://ollama.com) with an instruct model (Qwen recommended) - for sections, sermon notes and translation. Without it, the built-in section detector is used and translation is unavailable |
 
 ## Installation
 
-### Option A - Local add-on (quickest)
-1. Install the **Samba share** or **Advanced SSH & Web Terminal** add-on if you don't have one.
-2. Copy the `church_transcriber` folder into the `addons` share on Home Assistant, so you have `/addons/church_transcriber/config.yaml`.
-3. In Home Assistant go to **Settings → Add-ons → Add-on Store**, open the **⋮** menu and choose **Check for updates**.
-4. **Church Service Transcriber** appears under **Local add-ons**. Open it and click **Install** (the first build takes 5-15 minutes).
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store**, open the **⋮** menu → **Repositories**, and add
+   `https://github.com/shotgn16/ha-church-transcriber`
+   (or use the **Add repository** button on the [GitHub page](https://github.com/shotgn16/ha-church-transcriber)).
+2. Find **Church Service Transcriber** in the store and click **Install**. The add-on is built on your machine - the first install takes about 5-15 minutes.
+3. On the **Configuration** tab set `ollama_url` (and change `whisper_model` if your VM has less than 6 GB RAM - see below).
+4. **Start** the add-on and open **Transcriber** from the sidebar.
+5. Open **Settings** in the app and check the **Internet** and **Ollama** rows are green.
 
-### Option B - From GitHub
-In the Add-on Store choose **⋮ → Repositories**, add `https://github.com/shotgn16/ha-church-transcriber`, then find **Church Service Transcriber** in the store and click **Install**.
+The first transcription downloads the Whisper model - expect a pause at *"Downloading the Whisper model"* (about 1.6 GB for the default).
+
+### Updating
+When a new version is published, **Settings → Add-ons → Church Service Transcriber** shows **Update** (use **⋮ → Check for updates** in the Add-on Store to look straight away). Your transcripts, settings, API key and downloaded model are kept. See the **Changelog** tab for what changed.
+
+## Choosing a Whisper model
+
+Whisper runs on the CPU inside the add-on. Bigger models are more accurate (especially with names, accents and quiet speakers) but slower and need more memory. Set `whisper_model` on the **Configuration** tab and restart the add-on; the new model downloads on the next transcription.
+
+| `whisper_model` | Download (disk) | RAM while transcribing* | Recommended VM RAM** | Speed on CPU*** | Accuracy |
+|---|---|---|---|---|---|
+| `tiny` | 76 MB | ~0.6 GB | 3 GB | fastest (~12×) | Basic - misses names, OK for a rough draft |
+| `base` | 145 MB | ~0.7 GB | 3 GB | ~8× | Fair |
+| `small` | 484 MB | ~1.2 GB | 4 GB | ~4× | Good for clear speech |
+| `medium` | 1.53 GB | ~2.3 GB | 5 GB | ~2× | Very good |
+| `distil-large-v3` | 1.51 GB | ~2.3 GB | 5 GB | ~3× | Very good - **English only** |
+| **`large-v3-turbo`** (default) | 1.62 GB | ~2.5 GB | **6 GB** | ~3× | Excellent - close to `large-v3` |
+| `large-v3` | 3.09 GB | ~4.3 GB | 8 GB | 1× (slowest) | Best |
+
+\* Peak memory of the transcription process with `int8` (the default) for a 1½-hour service. Measured reference point: faster-whisper's own benchmark shows `small`/`int8` peaking at about 1.0 GB on 13 minutes of audio; the other figures are estimates scaled from model size. Longer services add about 0.35 GB per hour (the decoded audio is held in memory).
+\** Total for the Home Assistant VM: Home Assistant itself plus a typical set of integrations and add-ons uses 1.5-2.5 GB, so this includes headroom. If you run other heavy add-ons, add their usage on top.
+\*** Relative speed, `large-v3` = 1×. Real speed depends on your CPU and number of vCPUs - on a modern 4-vCPU VM a 1½-hour service with `large-v3-turbo` takes very roughly 30-90 minutes. Services queue and process one at a time in the background.
+
+**Which to choose?** Keep `large-v3-turbo` if the VM has 6 GB or more. Use `medium` with 5 GB, `small` with 4 GB. If your services are only in English, `distil-large-v3` is a good fast alternative.
+
+`whisper_compute`: leave on `int8` (fastest, least memory). `int8_float32` and `float32` use roughly 2× / 3× the memory for little accuracy gain on CPU.
+
+If the VM runs out of memory the service shows **"Whisper ran out of memory"** - choose a smaller model or add RAM, then press **Try again** (the downloaded audio is reused).
 
 ## Configuration
 
-Set these on the add-on's **Configuration** tab, then start the add-on.
+Set these on the add-on's **Configuration** tab, then restart the add-on.
 
-| Option | What it does |
-|---|---|
-| `ollama_url` | Your Ollama server, e.g. `http://192.168.1.50:11434`. **Required for AI features.** |
-| `ollama_model` | Leave blank to auto-select (prefers a Qwen *instruct* model), or set e.g. `qwen2.5:7b-instruct`. You can also pick from a list on the app's Settings page. |
-| `ollama_context` | Context window sent to Ollama (default 16384). Lower to 8192 if Ollama runs out of memory. |
-| `whisper_model` | Speech-to-text model. `large-v3-turbo` (default) is the best accuracy/speed balance; `medium`/`small` are faster. `distil-large-v3` is fast but English-only. |
-| `whisper_compute` | Leave on `int8` for CPUs. |
-| `whisper_threads` | 0 = use all vCPUs. |
-| `use_ai_for_sections` | Use Ollama to split services into sections (otherwise a built-in detector). |
-| `download_video` | Also save the full MP4 of each service to the media folder. |
-| `media_folder` | Where videos are saved (default `/share/church_transcriber`). |
-| `access_password` | Only needed if you enable the direct port (below). |
-| `cookies_file` | Optional YouTube cookies.txt if YouTube ever blocks downloads. |
-| `update_ytdlp_on_start` | Keeps the YouTube downloader current. Leave on. |
+| Option | Default | What it does |
+|---|---|---|
+| `whisper_model` | `large-v3-turbo` | Speech-to-text model - see [Choosing a Whisper model](#choosing-a-whisper-model). |
+| `whisper_compute` | `int8` | Leave on `int8` for CPUs. |
+| `whisper_threads` | `0` | CPU threads for Whisper; 0 = all vCPUs. Lower it to leave CPU free for Home Assistant during long transcriptions. |
+| `ollama_url` | | Your Ollama server, e.g. `http://192.168.1.50:11434`. **Required for AI features.** |
+| `ollama_model` | *(blank)* | Leave blank to auto-select (prefers a Qwen *instruct* model), or set e.g. `qwen2.5:7b-instruct`. You can also pick from a list on the app's **Settings** page. |
+| `ollama_context` | `16384` | Context window sent to Ollama. Lower to 8192 if Ollama runs out of memory. |
+| `use_ai_for_sections` | `true` | Use Ollama to split services into sections (otherwise the built-in detector). |
+| `access_password` | *(blank)* | Only needed if you enable the direct port (below). |
+| `download_video` | `false` | Also save the full MP4 of each service (up to 1080p) to the media folder - roughly 1-2 GB per hour. |
+| `media_folder` | `/share/church_transcriber` | Where videos are saved. |
+| `cookies_file` | `/share/church_transcriber/cookies.txt` | Optional YouTube cookies, only needed if YouTube blocks downloads (see Troubleshooting). |
+| `update_ytdlp_on_start` | `true` | Keeps the YouTube downloader current. Leave on - YouTube changes often. |
+
+The app's own **Settings** page holds the rest: church name and vocabulary (helps Whisper spell names), default language, automatic translations, skipping sung worship, export timestamps and the Ollama model.
 
 ### Ollama setup
-- Ollama must accept connections from your network. On the Ollama machine set `OLLAMA_HOST=0.0.0.0` (Linux: `systemctl edit ollama` → `Environment="OLLAMA_HOST=0.0.0.0"`; Windows: add it as a system environment variable and restart Ollama).
-- Good models: `qwen2.5:7b-instruct` (fast), `qwen2.5:14b-instruct` (better titles, summaries and translations). Any Qwen instruct model you already have will work.
-- The add-on works in small chunks so a 7B model handles a 2-hour service fine.
+- Ollama must accept connections from your network. On the Ollama machine set `OLLAMA_HOST=0.0.0.0` (Linux: `systemctl edit ollama` → `Environment="OLLAMA_HOST=0.0.0.0"`; Windows: add it as a system environment variable and restart Ollama) and allow port 11434 through its firewall.
+- Good models: `qwen2.5:7b-instruct` (fast, ~5 GB RAM/VRAM on the Ollama machine), `qwen2.5:14b-instruct` (better titles, summaries and translations, ~10 GB). Any Qwen instruct model you already have will work.
+- The add-on sends the service in small chunks, so a 7B model handles a 2-hour service fine.
+- Ollama runs on its own machine, so its memory is separate from the Home Assistant VM's.
 
-### ESXi VM sizing
-- **CPU:** 4+ vCPUs recommended for `large-v3-turbo`. In the VM's CPU settings make sure **AVX2 is exposed to the guest** (check that EVC / CPU compatibility mode isn't hiding it) - Whisper is several times slower without it.
-- **RAM:** allow ~3 GB for the add-on while transcribing (large-v3-turbo int8).
-- **Disk:** the Whisper model is downloaded once (~1.6 GB). Audio is ~25 MB per hour of service.
-- **Speed guide:** on a modern 4-vCPU VM, expect very roughly 30-90 minutes to transcribe a 90-minute service with `large-v3-turbo`; `small` is about 3x faster. Services queue and process one at a time in the background.
+### ESXi / virtual machine notes
+- **AVX2:** Whisper needs AVX/AVX2. In ESXi, check the VM's CPU compatibility / **EVC mode** isn't hiding them (a "baseline" EVC level can). Without them the service fails with *"This CPU doesn't expose the instructions Whisper needs"*, or runs several times slower.
+- **vCPUs:** give the VM 4 or more; set `whisper_threads` lower than the vCPU count if Home Assistant feels sluggish while transcribing.
+- **RAM:** size the VM from the [model table](#choosing-a-whisper-model). Avoid memory overcommit/ballooning for this VM if you can - Whisper's peak use is short but large.
+- **Disk:** keep at least 5 GB free beyond the model size.
 
 ## Using it on your devices
 - **Easiest:** click **Transcriber** in the Home Assistant sidebar. In the **Home Assistant app** on iPhone/Android it is in the sidebar too, and it works remotely wherever your Home Assistant does (e.g. via Nabu Casa).
 - **Home screen app:** open it in Safari/Chrome and choose *Add to Home Screen*.
-- **Direct port (optional):** on the add-on's Network section set a port for `8099/tcp`, set `access_password`, then browse to `http://<home-assistant-ip>:<port>`. Only do this on your home network; use the sidebar for remote access.
+- **Direct port (optional):** in the add-on's **Network** section set a port for `8099/tcp`, set `access_password`, then browse to `http://<home-assistant-ip>:<port>`. Only do this on your home network; use the sidebar for remote access.
+
+## How a service is processed
+1. **Checking** - reads the video details. Scheduled or live services wait (shown as **Scheduled** / **Live now**) and continue by themselves when the stream has ended.
+2. **Downloading** - the audio only (about 25 MB per hour), kept so you can play it in the editor.
+3. **Transcribing** - Whisper turns speech into timed text (the longest step).
+4. **Organising** - sections, overview, sermon notes and scripture references.
+5. **Ready** - edit, translate, export or use in automations. Translations you asked for run afterwards.
+
+If a step fails because of a temporary network problem, the service shows **Retrying** and tries again by itself (after 2, 5, 10, 20, 30 and 60 minutes). Other failures show a red explanation with **Show details**; **Try again** resumes from the last completed step.
 
 ## Automations & API
 
@@ -76,7 +129,7 @@ The add-on fires Home Assistant events:
 | `church_transcriber_translation_ready` | A translation has finished (`trigger.event.data.translation` is the language) |
 | `church_transcriber_failed` | Processing failed (`trigger.event.data.error`) |
 
-The event carries the parts you choose on the API page (default: overview & sermon notes, scripture references and outline). Example - send the sermon notes to your phone:
+The event carries the parts you choose on the API page (default: overview & sermon notes, scripture references and outline). **Send a test now** on the API page fires one using your latest service. Example - send the sermon notes to your phone:
 
 ```yaml
 alias: Sermon notes when a service is ready
@@ -117,6 +170,8 @@ Base address from Home Assistant: `http://<add-on hostname>:8099/api/v1` - the A
 | `max_chars` | `max_chars=500` | Shorten the text - handy for notifications and TTS |
 | `timestamps` | `timestamps=1` | Add `[12:34]` timestamps to paragraphs |
 
+Section kinds: `prelude`, `welcome`, `worship`, `prayer`, `announcements`, `scripture`, `sermon`, `offering`, `communion`, `baptism`, `testimony`, `response`, `benediction`, `other`.
+
 Examples: `/api/v1/transcripts/latest?kinds=sermon&format=text` (just the sermon as text) - `/api/v1/transcripts/latest?parts=summary&lang=es` (Spanish sermon notes).
 
 JSON responses always include a ready-made `text` field combining the selected parts, plus `title`, `date`, `url` and structured `summary`, `scriptures`, `outline` and `sections` (each section has `index`, `kind`, `title`, `start`, `timestamp`, `text`, `html`).
@@ -145,6 +200,12 @@ actions:
 
 Calls made through the Home Assistant sidebar don't need the key; everything else does. Use **New key** on the API page if a key is ever exposed.
 
+## Your data & backups
+- Transcripts, translations, settings, channel watches, the API key and the audio for each service are stored in the add-on's own data folder and **included in Home Assistant backups**.
+- The downloaded Whisper model is **left out of backups** (it's large and simply downloads again after a restore).
+- Videos saved with `download_video` live in the `share` folder (`/share/church_transcriber/videos`) and follow your `share` backup settings.
+- Deleting a service in the app removes its transcript, translations and audio.
+
 ## Tips
 - Add your church name, pastors' names and other unusual words in **Settings → Vocabulary**. Whisper uses them to spell names correctly. In the editor, **Find → Add to vocabulary** teaches it a correction for next time.
 - Tick **Don't transcribe sung worship** if you only want the spoken parts.
@@ -153,10 +214,10 @@ Calls made through the Home Assistant sidebar don't need the key; everything els
 
 ## Troubleshooting
 
-If a service fails, open it: the red message explains the cause (temporary network problems retry automatically first), **Show details** has the full error (with a **Copy details** button), and **Try again** resumes from where it stopped - there's no need to delete the service.
+If a service fails, open it: the red message explains the cause (temporary network problems retry automatically first), **Show details** has the full error (with a **Copy details** button), and **Try again** resumes from where it stopped - there's no need to delete the service. The add-on's **Log** tab has more detail.
 
 **DNS: "Home Assistant couldn't look up YouTube's address" / "Temporary failure in name resolution"**
-This means Home Assistant itself couldn't turn `www.youtube.com` into an address - it's a network setting on the Home Assistant machine, not a problem with the video. The add-on now retries automatically for about two hours (you'll see **Retrying**), and the **Internet** row on the app's **Settings** page shows whether lookups currently work.
+Home Assistant itself couldn't turn `www.youtube.com` into an address - it's a network setting on the Home Assistant machine, not a problem with the video. The add-on retries automatically for about two hours (you'll see **Retrying**), and the **Internet** row on the app's **Settings** page shows whether lookups currently work.
 
 If it keeps happening, point Home Assistant at reliable DNS servers. Install the **Terminal & SSH** add-on, open it and run:
 
@@ -165,7 +226,7 @@ ha dns options --servers dns://1.1.1.1 --servers dns://8.8.8.8
 ha dns restart
 ```
 
-Then restart this add-on. Other things worth checking: the VM's network adapter has a working gateway/DNS in ESXi, and your router or Pi-hole/AdGuard isn't blocking YouTube domains. `ha dns info` and `ha resolution info` in the terminal show Home Assistant's DNS status.
+Then restart this add-on. Also check that the VM's network adapter has a working gateway/DNS in ESXi, and that your router or Pi-hole/AdGuard isn't blocking YouTube domains. `ha dns info` and `ha resolution info` show Home Assistant's DNS status.
 
 **"YouTube asked to confirm this isn't a bot"** - YouTube sometimes blocks automated downloads. Give the add-on your YouTube cookies:
 1. On a computer, install a browser extension that exports cookies in *Netscape / cookies.txt* format (for example "Get cookies.txt LOCALLY" for Chrome/Edge, or "cookies.txt" for Firefox).
@@ -175,16 +236,14 @@ Then restart this add-on. Other things worth checking: the VM's network adapter 
 
 **"YouTube refused the download (HTTP 403)" or "couldn't solve YouTube's player challenge"** - YouTube changed something. Restart the add-on (it updates the downloader on start) and press **Try again**.
 
-**"Whisper ran out of memory"** - give the Home Assistant VM more RAM (6 GB or more for `large-v3-turbo`), or set `whisper_model` to `medium` or `small`, restart the add-on and press **Try again** (the download is reused).
+**"Whisper ran out of memory"** - choose a smaller `whisper_model` or give the VM more RAM (see the [model table](#choosing-a-whisper-model)), restart the add-on and press **Try again**.
 
 **"This CPU doesn't expose the instructions Whisper needs"** - in ESXi, edit the VM's CPU settings so AVX/AVX2 are passed through (check the EVC / CPU compatibility mode), then restart the VM.
 
-**"Couldn't download the Whisper model"** - the first transcription downloads the model from huggingface.co; check the machine's internet access and press **Try again**.
+**"Couldn't download the Whisper model"** - the first transcription downloads the model from huggingface.co (76 MB - 3.1 GB depending on the model). It retries automatically; if it keeps failing, check the Internet row on the Settings page and the DNS steps above.
 
-**Stuck on "Stream ended - waiting for YouTube to finish processing"** - after a live stream YouTube can take a while (sometimes hours for long streams) before the recording can be downloaded. The add-on checks every 15 minutes and continues automatically.
+**Stuck on "Stream ended - waiting for YouTube to finish processing"** - after a live stream YouTube can take a while before the recording can be downloaded. The add-on checks every 15 minutes and continues automatically (it gives up after 2 days).
 
 **Ollama shows "Not reachable"** on the Settings page - check `ollama_url`, that `OLLAMA_HOST=0.0.0.0` is set on the Ollama machine, and that the firewall allows port 11434.
 
 **Transcription slow** - choose a smaller `whisper_model`, give the VM more vCPUs, and confirm AVX2 is available.
-
-Logs are on the add-on's **Log** tab.

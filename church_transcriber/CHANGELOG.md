@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.5
+- Documentation brought up to date: requirements, a **Whisper model table** (download size, RAM while transcribing and recommended VM RAM for every model), ESXi/VM notes, how processing works, updating, data & backups, and every feature added since 1.0.
+- The Whisper model is now **left out of Home Assistant backups** (it's 0.1-3 GB and downloads again after a restore). Transcripts, audio and settings are still backed up.
+- "Whisper ran out of memory" now says how much RAM the chosen model needs.
+- The `whisper_model` option description lists the RAM each model needs.
+
 ## 1.1.4
 - If the first-run Whisper model download fails (network/DNS), the service now shows "Couldn't download the Whisper model" and retries automatically, instead of a generic "Transcription failed".
 - Verified end to end: the add-on's transcription script runs the full faster-whisper pipeline with PyAV 19 (the version that caused the `metadata_errors` crash).
